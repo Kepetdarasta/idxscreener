@@ -1,0 +1,30 @@
+# Environment
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Data — jangan commit data mentah & cache
+data/raw/
+data/processed/
+data/universe/
+
+# Logs
+*.log
+screener.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Streamlit
+.streamlit/secrets.toml
