@@ -87,7 +87,7 @@ def render_ohlcv_chart(ticker: str, df: pd.DataFrame) -> None:
     fig.update_xaxes(showgrid=True, gridcolor="#f1f5f9")
     fig.update_yaxes(showgrid=True, gridcolor="#f1f5f9")
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_foreign_flow_chart(ticker: str, foreign_df: pd.DataFrame) -> None:
@@ -127,7 +127,7 @@ def render_foreign_flow_chart(ticker: str, foreign_df: pd.DataFrame) -> None:
     fig.update_xaxes(showgrid=False)
     fig.update_yaxes(showgrid=True, gridcolor="#f1f5f9")
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
 
 def render_signal_badge(signal: str) -> str:

@@ -171,7 +171,7 @@ with st.sidebar:
     use_cache  = st.toggle("Gunakan cache OHLCV", value=True)
     run_button = st.button(
         "🔍 Jalankan Screening",
-        use_container_width=True,
+        width="stretch",
         type="primary",
     )
 
@@ -348,7 +348,7 @@ with tab1:
         if "Net Asing 5h"in show: show["Net Asing 5h"]= show["Net Asing 5h"].apply(lambda x: f"Rp {x/1e9:+.1f}M" if pd.notna(x) else "—")
         if "Str"         in show: show["Str"]         = show["Str"].apply(lambda x: f"{x:.1f}")
 
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        st.dataframe(show, width="stretch", hide_index=True)
 
 
 # ── TAB 2: DETAIL ─────────────────────────────────────────────────────────────
@@ -407,7 +407,7 @@ with tab3:
     else:
         st.warning("⚠️ Data harga & volume saja (tanpa foreign flow)")
 
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width="stretch")
 
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
@@ -416,7 +416,7 @@ with tab3:
             data=df.to_csv(index=False).encode("utf-8"),
             file_name="idx_screener_hasil.csv",
             mime="text/csv",
-            use_container_width=True,
+            width="stretch",
         )
     with col_dl2:
         if not st.session_state.foreign_df.empty:
@@ -425,7 +425,7 @@ with tab3:
                 data=st.session_state.foreign_df.to_csv(index=False).encode("utf-8"),
                 file_name="foreign_flow_data.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width="stretch",
             )
 
     # Panduan format upload
