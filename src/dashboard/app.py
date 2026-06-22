@@ -1,7 +1,6 @@
 # =============================================================================
 # src/dashboard/app.py — Streamlit Dashboard IDX Screener
 # Berjalan dengan atau tanpa data foreign flow
-#
 # Jalankan: streamlit run src/dashboard/app.py
 # =============================================================================
 
@@ -9,7 +8,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-import io
+from datetime import date
 import pandas as pd
 import streamlit as st
 
@@ -51,21 +50,21 @@ SIGNAL_EMOJI = {
     "Mark Down" : "🔴",
 }
 
-
 # =============================================================================
-# SESSION STATE
+# SESSION STATE — inisialisasi semua key di awal
 # =============================================================================
 
-for key, default in [
-    ("results_df",   pd.DataFrame()),
-    ("ohlcv_cache",  {}),
-    ("foreign_df",   pd.DataFrame()),
-    ("has_foreign",  False),
-    ("last_tickers", []),
-]:
+DEFAULTS = {
+    "results_df"      : pd.DataFrame(),
+    "ohlcv_cache"     : {},
+    "foreign_df"      : pd.DataFrame(),
+    "has_foreign"     : False,
+    "screening_done"  : False,   # ← key baru: flag apakah screening sudah pernah dijalankan
+    "last_tickers"    : [],
+}
+for key, default in DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = default
-
 
 # =============================================================================
 # SIDEBAR
@@ -108,21 +107,13 @@ with st.sidebar:
         help=(
             "Format kolom yang diterima:\n"
             "StockCode / Ticker, ForeignBuy, ForeignSell, NetBuySell\n\n"
-            "Nama file bebas — tidak harus foreign_flow_YYYYMMDD.csv"
+            "Nama file bebas."
         ),
     )
 
-    foreign_df = pd.DataFrame()
-    foreign_status = "❌ Tidak ada — mode harga & volume"
-
+    # Proses upload — hanya jika ada file baru
     if uploaded_file is not None:
         try:
-            # Parse langsung dari memory — kompatibel lokal & Streamlit Cloud
-            import io
-            from datetime import date
-            from src.data_fetcher.idx_foreign_parser import _parse_format_vertical
-
-            # Simpan ke DATA_RAW_DIR (works di lokal & /tmp di cloud)
             dated_path = cfg.DATA_RAW_DIR / f"foreign_flow_{date.today().strftime('%Y%m%d')}.csv"
             dated_path.write_bytes(uploaded_file.getvalue())
 
@@ -130,30 +121,30 @@ with st.sidebar:
             foreign_df = load_foreign_flow(tickers, days=5)
 
             if not foreign_df.empty:
-                foreign_status = f"✅ {foreign_df['ticker'].nunique()} saham dimuat"
                 st.session_state.foreign_df  = foreign_df
                 st.session_state.has_foreign = True
+                st.success(f"✅ {foreign_df['ticker'].nunique()} saham dimuat")
             else:
-                foreign_status = "⚠ File diupload tapi tidak terbaca — cek format"
+                st.warning("⚠ File diupload tapi tidak terbaca — cek format")
         except Exception as e:
-            foreign_status = f"⚠ Error: {e}"
+            st.error(f"Error upload: {e}")
 
-    st.info(foreign_status)
-
-    # Atau pakai file yang sudah ada di disk
-    if foreign_df.empty:
-        from src.data_fetcher.idx_foreign_parser import _get_sorted_files
+    # Coba load dari disk jika belum ada di session
+    if not st.session_state.has_foreign:
+        from src.data_fetcher.idx_foreign_parser import _get_sorted_files, load_foreign_flow
         existing = _get_sorted_files()
         if existing:
             try:
-                from src.data_fetcher.idx_foreign_parser import load_foreign_flow
                 foreign_df = load_foreign_flow(tickers, days=5)
                 if not foreign_df.empty:
-                    st.info(f"📁 Pakai file di disk: {existing[-1].name}")
                     st.session_state.foreign_df  = foreign_df
                     st.session_state.has_foreign = True
+                    st.info(f"📁 File di disk: {existing[-1].name}")
             except Exception:
                 pass
+
+    if not st.session_state.has_foreign:
+        st.info("❌ Tidak ada — mode harga & volume")
 
     st.markdown("---")
 
@@ -167,42 +158,19 @@ with st.sidebar:
     min_strength = st.slider("Min. Strength", 0, 100, 0, 5)
 
     st.markdown("---")
-
     use_cache  = st.toggle("Gunakan cache OHLCV", value=True)
     run_button = st.button(
         "🔍 Jalankan Screening",
-        width="stretch",
+        use_container_width=True,
         type="primary",
     )
-
     st.markdown("---")
     st.caption("📡 Harga: Yahoo Finance")
     st.caption("📋 Data asing: Upload manual")
 
 
 # =============================================================================
-# HEADER
-# =============================================================================
-
-st.title("📊 IDX Screener — ADMD")
-st.caption("Akumulasi · Distribusi · Mark Up · Mark Down")
-
-# Banner mode
-has_foreign = st.session_state.has_foreign or not foreign_df.empty
-if has_foreign:
-    st.success("✅ **Mode lengkap** — data harga, volume, dan foreign flow tersedia.")
-else:
-    st.warning(
-        "⚠️ **Mode harga & volume** — data asing tidak tersedia. "
-        "Sinyal Akumulasi & Distribusi berjalan dengan kriteria harga+volume saja "
-        "(strength dikap 70). Upload CSV asing di sidebar untuk hasil lebih akurat."
-    )
-
-st.markdown("---")
-
-
-# =============================================================================
-# JALANKAN SCREENING
+# JALANKAN SCREENING — hanya saat tombol diklik
 # =============================================================================
 
 if run_button:
@@ -215,7 +183,6 @@ if run_button:
             st.session_state.ohlcv_cache  = ohlcv
             st.session_state.last_tickers = tickers
 
-            # Pakai foreign flow yang sudah dimuat (dari upload atau disk)
             ff = st.session_state.foreign_df
 
             FN_MAP = {
@@ -238,9 +205,12 @@ if run_button:
             else:
                 st.session_state.results_df = pd.DataFrame()
 
-            n = len(st.session_state.results_df)
+            # ← Set flag bahwa screening sudah pernah dijalankan
+            st.session_state.screening_done = True
+
+            n    = len(st.session_state.results_df)
             mode = "lengkap" if st.session_state.has_foreign else "harga+volume"
-            st.success(f"✅ Screening selesai — **{n} sinyal** dari {len(ohlcv)} saham (mode: {mode}).")
+            st.success(f"✅ Selesai — **{n} sinyal** dari {len(ohlcv)} saham (mode: {mode}).")
 
         except Exception as e:
             st.error(f"❌ Error: {e}")
@@ -248,17 +218,35 @@ if run_button:
 
 
 # =============================================================================
-# KONTEN UTAMA
+# HEADER
 # =============================================================================
 
-df = st.session_state.results_df
+st.title("📊 IDX Screener — ADMD")
+st.caption("Akumulasi · Distribusi · Mark Up · Mark Down")
 
-if df.empty:
-    if not run_button:
-        st.info("👈 Klik **Jalankan Screening** di sidebar untuk memulai.")
-        with st.expander("ℹ️ Cara kerja 4 sinyal ADMD", expanded=True):
-            c1, c2 = st.columns(2)
-            c1.markdown("""
+if st.session_state.has_foreign:
+    st.success("✅ **Mode lengkap** — data harga, volume, dan foreign flow tersedia.")
+else:
+    st.warning(
+        "⚠️ **Mode harga & volume** — data asing tidak tersedia. "
+        "Sinyal Akumulasi & Distribusi berjalan dengan kriteria harga+volume saja "
+        "(strength dikap 70). Upload CSV asing di sidebar untuk hasil lebih akurat."
+    )
+
+st.markdown("---")
+
+
+# =============================================================================
+# KONTEN — tampilkan panduan jika belum pernah screening
+# =============================================================================
+
+# ← Pakai flag screening_done, BUKAN df.empty
+# Ini yang mencegah konten hilang saat user ganti selectbox
+if not st.session_state.screening_done:
+    st.info("👈 Klik **Jalankan Screening** di sidebar untuk memulai.")
+    with st.expander("ℹ️ Cara kerja 4 sinyal ADMD", expanded=True):
+        c1, c2 = st.columns(2)
+        c1.markdown("""
 **🟢 Akumulasi** — bandar kumpulkan diam-diam
 - Net buy asing ≥ Rp 200M dalam 5 hari *(jika ada data asing)*
 - Harga naik pelan –1% s/d +5%
@@ -269,7 +257,7 @@ if df.empty:
 - Harga +3% dalam 1 hari, ATAU
 - Breakout dari High 5 hari sebelumnya
 """)
-            c2.markdown("""
+        c2.markdown("""
 **🟠 Distribusi** — bandar buang ke ritel
 - Net sell asing ≥ Rp 150M dalam 5 hari *(jika ada data asing)*
 - Harga stagnan –10% s/d +2%
@@ -282,8 +270,18 @@ if df.empty:
 """)
     st.stop()
 
+# Ambil hasil dari session state — tidak hilang saat re-run
+df = st.session_state.results_df
 
-# ── Metrik ringkasan ──────────────────────────────────────────────────────────
+if df.empty and st.session_state.screening_done:
+    st.info("Tidak ada sinyal ditemukan dengan filter saat ini. Coba ubah filter atau jalankan ulang.")
+    st.stop()
+
+
+# =============================================================================
+# METRIK RINGKASAN
+# =============================================================================
+
 cols = st.columns(4)
 for i, (sig, emoji) in enumerate(SIGNAL_EMOJI.items()):
     count = len(df[df["signal"] == sig])
@@ -325,7 +323,6 @@ with tab1:
             unsafe_allow_html=True,
         )
 
-        # Kolom yang ditampilkan — sesuaikan per sinyal
         col_map = {
             "ticker"   : "Ticker",
             "close"    : "Harga",
@@ -344,19 +341,21 @@ with tab1:
         avail = {k: v for k, v in col_map.items() if k in subset.columns}
         show  = subset[list(avail)].rename(columns=avail).copy()
 
-        if "Harga"       in show: show["Harga"]       = show["Harga"].apply(lambda x: f"Rp {x:,.0f}")
-        if "Net Asing 5h"in show: show["Net Asing 5h"]= show["Net Asing 5h"].apply(lambda x: f"Rp {x/1e9:+.1f}M" if pd.notna(x) else "—")
-        if "Str"         in show: show["Str"]         = show["Str"].apply(lambda x: f"{x:.1f}")
+        if "Harga"        in show: show["Harga"]        = show["Harga"].apply(lambda x: f"Rp {x:,.0f}")
+        if "Net Asing 5h" in show: show["Net Asing 5h"] = show["Net Asing 5h"].apply(lambda x: f"Rp {x/1e9:+.1f}M" if pd.notna(x) else "—")
+        if "Str"          in show: show["Str"]          = show["Str"].apply(lambda x: f"{x:.1f}")
 
-        st.dataframe(show, width="stretch", hide_index=True)
+        st.dataframe(show, use_container_width=True, hide_index=True)
 
 
-# ── TAB 2: DETAIL ─────────────────────────────────────────────────────────────
+# ── TAB 2: DETAIL SAHAM ──────────────────────────────────────────────────────
 with tab2:
     all_tickers = sorted(df["ticker"].unique())
-    selected    = st.selectbox("Pilih saham", all_tickers)
 
-    if selected:
+    # ← key="ticker_select" mencegah selectbox reset saat re-run
+    selected = st.selectbox("Pilih saham", all_tickers, key="ticker_select")
+
+    if selected and selected in df["ticker"].values:
         row   = df[df["ticker"] == selected].iloc[0]
         color = SIGNAL_COLOR.get(row["signal"], "#64748b")
         emoji = SIGNAL_EMOJI.get(row["signal"], "⚪")
@@ -369,7 +368,6 @@ with tab2:
             unsafe_allow_html=True,
         )
 
-        # Peringatan mode tanpa asing
         if "data_asing" in row and not row["data_asing"] and row["signal"] in ["Akumulasi", "Distribusi"]:
             st.warning(
                 "⚠️ Sinyal ini berjalan tanpa data asing — "
@@ -383,13 +381,17 @@ with tab2:
         if pd.notna(row.get("net_5d")):    m4.metric("Net Asing 5h", f"Rp {row['net_5d']/1e9:+.1f}M")
 
         st.progress(int(row["strength"]), text=f"Strength: {row['strength']:.1f}/100")
+
         if row.get("note"):
             st.info(f"📌 {row['note']}")
 
+        # ← Ambil dari session state — tidak hilang saat ganti selectbox
         ohlcv = st.session_state.ohlcv_cache
         if selected in ohlcv:
             st.markdown("#### Chart Harga & Volume")
             render_ohlcv_chart(selected, ohlcv[selected])
+        else:
+            st.info("Chart tidak tersedia — jalankan screening ulang.")
 
         foreign = st.session_state.foreign_df
         if not foreign.empty and selected in foreign["ticker"].values:
@@ -401,13 +403,12 @@ with tab2:
 with tab3:
     st.subheader("Export Hasil Screening")
 
-    # Info mode
     if st.session_state.has_foreign:
         st.success("✅ Data lengkap (harga + volume + foreign flow)")
     else:
         st.warning("⚠️ Data harga & volume saja (tanpa foreign flow)")
 
-    st.dataframe(df, width="stretch")
+    st.dataframe(df, use_container_width=True)
 
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
@@ -416,7 +417,7 @@ with tab3:
             data=df.to_csv(index=False).encode("utf-8"),
             file_name="idx_screener_hasil.csv",
             mime="text/csv",
-            width="stretch",
+            use_container_width=True,
         )
     with col_dl2:
         if not st.session_state.foreign_df.empty:
@@ -425,10 +426,9 @@ with tab3:
                 data=st.session_state.foreign_df.to_csv(index=False).encode("utf-8"),
                 file_name="foreign_flow_data.csv",
                 mime="text/csv",
-                width="stretch",
+                use_container_width=True,
             )
 
-    # Panduan format upload
     with st.expander("📋 Format CSV data asing yang diterima"):
         st.markdown("""
 **Kolom minimal yang dibutuhkan:**
@@ -442,9 +442,4 @@ with tab3:
 - Ticker: `StockCode`, `Ticker`, `KodeSaham`, `Kode`, `Emiten`
 - Net: `NetBuySell`, `Net`, `NetBeli`, `Net_Buy_Sell`
 - Nilai dalam **Rupiah** (bukan lot)
-
-**Sumber data yang bisa dipakai:**
-- RTI Business → export dari fitur Foreign Net Buy/Sell
-- Copy-paste dari tabel di Infovesta.com → simpan sebagai CSV
-- Export dari broker (IPOT, Stockbit) jika tersedia
 """)
