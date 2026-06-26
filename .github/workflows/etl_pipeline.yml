@@ -13,6 +13,8 @@
 #   3. Hasil tersimpan ke Neon PostgreSQL
 # =============================================================================
 
+pip install -r requirements.txt
+
 name: ETL Pipeline — Stock Screening EOD
 
 on:
