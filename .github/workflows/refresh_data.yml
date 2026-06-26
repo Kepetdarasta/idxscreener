@@ -1,0 +1,31 @@
+name: Daily Screening Refresh
+
+on:
+  schedule:
+    - cron: "0 10 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  screening:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+      - run: pip install -r requirements.txt
+      - run: mkdir -p data/raw data/processed data/universe
+      - name: Jalankan screening
+        run: python run_screening.py --no-cache --universe lq45
+        env:
+          RTI_API_KEY: ${{ secrets.RTI_API_KEY }}
+      - name: Commit hasil
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/processed/signals_latest.csv || true
+          git diff --cached --quiet || git commit -m "chore: refresh $(date +'%Y-%m-%d')"
+          git push
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

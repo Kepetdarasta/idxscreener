@@ -1,0 +1,82 @@
+# =============================================================================
+# .github/workflows/etl_pipeline.yml
+#
+# ETL Pipeline Stock Screening V2 — GitHub Actions Scheduler
+#
+# Trigger:
+#   - Otomatis jam 09:15 UTC = 16:15 WIB, Senin–Jumat
+#   - Manual via GitHub UI (workflow_dispatch) untuk testing
+#
+# Cara pakai:
+#   1. Push file CSV ke data/raw/ setiap hari kerja
+#   2. GitHub Actions otomatis jalan jam 16:15 WIB
+#   3. Hasil tersimpan ke Neon PostgreSQL
+# =============================================================================
+
+name: ETL Pipeline — Stock Screening EOD
+
+on:
+  # Otomatis: 09:15 UTC = 16:15 WIB, hanya Senin–Jumat
+  schedule:
+    - cron: "15 9 * * 1-5"
+
+  # Manual trigger dari GitHub UI (untuk testing)
+  workflow_dispatch:
+    inputs:
+      trade_date:
+        description: "Tanggal proses (YYYY-MM-DD), kosongkan untuk hari ini"
+        required: false
+        default: ""
+      backfill:
+        description: "Backfill N hari ke belakang (0 = tidak backfill)"
+        required: false
+        default: "0"
+
+jobs:
+  etl:
+    name: Jalankan ETL Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # ── 1. Checkout repo (termasuk file CSV di data/raw/) ──────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Python ────────────────────────────────────────────────────
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      # ── 3. Install dependencies ────────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements_etl.txt
+
+      # ── 4. Jalankan ETL pipeline ───────────────────────────────────────────
+      - name: Run ETL pipeline
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ "${{ github.event.inputs.backfill }}" != "" ] && [ "${{ github.event.inputs.backfill }}" != "0" ]; then
+            echo "Mode backfill: ${{ github.event.inputs.backfill }} hari"
+            python etl_pipeline.py --backfill ${{ github.event.inputs.backfill }}
+          elif [ "${{ github.event.inputs.trade_date }}" != "" ]; then
+            echo "Mode tanggal spesifik: ${{ github.event.inputs.trade_date }}"
+            python etl_pipeline.py --date ${{ github.event.inputs.trade_date }}
+          else
+            echo "Mode normal: hari ini"
+            python etl_pipeline.py
+          fi
+
+      # ── 5. Upload log sebagai artifact (untuk debugging) ───────────────────
+      - name: Upload ETL log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-log-${{ github.run_id }}
+          path: etl.log
+          retention-days: 7
