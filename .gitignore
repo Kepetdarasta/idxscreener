@@ -1,0 +1,46 @@
+# =============================================================================
+# .gitignore — Stock Screening V2
+# =============================================================================
+
+# ── Credentials & secrets ────────────────────────────────────────────────────
+.env
+*.env
+.env.*
+!.env.example          # boleh commit file contoh (tanpa nilai asli)
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# ── Data — OHLCV cache (besar, tidak perlu di-commit) ───────────────────────
+data/cache/
+data/processed/
+*.pkl
+*.parquet
+
+# ── Data foreign flow — INI YANG DI-COMMIT ke GitHub ────────────────────────
+# data/raw/foreign_flow_*.csv  ← JANGAN dimasukkan ke gitignore
+# File-file ini memang sengaja di-push agar GitHub Actions bisa membacanya
+
+# ── Log ──────────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── OS ───────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE ──────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp

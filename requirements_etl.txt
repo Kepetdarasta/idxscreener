@@ -1,0 +1,8 @@
+# ETL Pipeline Stock Screening V2 — Requirements
+# pip install -r requirements_etl.txt
+
+psycopg2-binary>=2.9
+python-dotenv>=1.0
+yfinance>=0.2
+pandas>=2.0
+schedule>=1.2
