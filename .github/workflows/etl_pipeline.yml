@@ -1,0 +1,55 @@
+name: ETL Pipeline EOD
+
+on:
+  schedule:
+    - cron: "15 9 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      trade_date:
+        description: "Tanggal proses (YYYY-MM-DD), kosongkan untuk hari ini"
+        required: false
+        default: ""
+      backfill:
+        description: "Backfill N hari ke belakang (0 = tidak backfill)"
+        required: false
+        default: "0"
+
+jobs:
+  etl:
+    name: Jalankan ETL Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run ETL pipeline
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ "${{ github.event.inputs.backfill }}" != "" ] && [ "${{ github.event.inputs.backfill }}" != "0" ]; then
+            python etl_pipeline.py --backfill ${{ github.event.inputs.backfill }}
+          elif [ "${{ github.event.inputs.trade_date }}" != "" ]; then
+            python etl_pipeline.py --date ${{ github.event.inputs.trade_date }}
+          else
+            python etl_pipeline.py
+          fi
+
+      - name: Upload ETL log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-log-${{ github.run_id }}
+          path: etl.log
+          retention-days: 7
