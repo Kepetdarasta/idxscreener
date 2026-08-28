@@ -1,147 +1,81 @@
 # =============================================================================
-# src/signals/markup.py
-# Sinyal MARK UP: Volume melonjak + harga breakout
+# src/signals/markup.py — Stage 2: deteksi trigger breakout ("mulai bergerak")
+#
+# VERSI BARU (tanpa foreign flow). Breakout hanya dianggap valid kalau saham
+# tsb SUDAH lolos Stage 1 (accumulation.detect) — supaya breakout yang
+# dihitung memang keluar dari fase akumulasi, bukan breakout acak dari
+# saham yang sedang trending liar tanpa fase konsolidasi.
+#
+# Kriteria trigger:
+#   1. Breakout   — close hari ini > resistance (high tertinggi N hari sebelumnya)
+#   2. Volume     — volume ratio >= MARKUP_VOLUME_RATIO_MIN (konfirmasi tenaga beli nyata)
+#   3. OBV        — OBV hari ini bikin high baru (konfirmasi bukan fakeout)
+#
+# Parameter MARKUP_* diambil dari config.py yang sudah ada (tidak ada
+# parameter baru yang perlu ditambahkan untuk Stage 2 ini).
 # =============================================================================
 
 import logging
+import sys
 from pathlib import Path
-from typing import Dict, Optional
 
 import pandas as pd
 
-import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import config as cfg
+from src.signals import indicators, accumulation
 
 logger = logging.getLogger(__name__)
 
 
-def detect(
-    ohlcv_data: Dict[str, pd.DataFrame],
-    foreign_flow: pd.DataFrame,
-) -> pd.DataFrame:
+def detect(ohlcv: dict, foreign_flow: pd.DataFrame = None) -> pd.DataFrame:
     """
-    Deteksi sinyal Mark Up.
-
-    Kriteria (semua harus terpenuhi):
-    1. Volume >= 1.5x rata-rata 20 hari  [vol_ratio >= cfg.MARKUP_VOLUME_RATIO_MIN]
-    2. Salah satu breakout:
-       a. Return harian >= +3%           [cfg.MARKUP_PRICE_BREAKOUT]
-       b. Close > High tertinggi 5 hari sebelumnya
-
-    Net buy asing bukan filter wajib, tapi menaikkan strength jika ada.
+    ohlcv: dict[ticker] -> DataFrame(index=tanggal, columns=[Open,High,Low,Close,Volume])
+    Return DataFrame kolom: ticker, close, strength, note, signal ('Mark Up')
     """
-    net_lookup = _build_net_lookup(foreign_flow)
-    results    = []
-
-    for ticker, df in ohlcv_data.items():
-        row = _check(ticker, df, net_lookup)
-        if row:
-            results.append(row)
-
-    if not results:
-        logger.info("Mark Up: tidak ada sinyal.")
+    accumulated = accumulation.detect(ohlcv, foreign_flow)
+    if accumulated.empty:
         return pd.DataFrame()
 
-    out = (
-        pd.DataFrame(results)
-        .sort_values("strength", ascending=False)
-        .reset_index(drop=True)
-    )
-    logger.info(f"Mark Up: {len(out)} sinyal — top: {list(out['ticker'][:3])}")
-    return out
+    accumulated_tickers = set(accumulated["ticker"])
+    rows = []
+    min_len = cfg.MARKUP_BREAKOUT_WINDOW + cfg.MARKUP_VOLUME_AVG_WINDOW + 1
 
+    for ticker in accumulated_tickers:
+        df = ohlcv.get(ticker)
+        if df is None or len(df) < min_len:
+            continue
 
-# -----------------------------------------------------------------------------
-def _check(ticker: str, df: pd.DataFrame, net_lookup: dict) -> Optional[dict]:
-    try:
-        if len(df) < cfg.MARKUP_VOLUME_AVG_WINDOW + 2:
-            return None
+        # Resistance = high tertinggi N hari SEBELUM hari ini (exclude hari ini sendiri)
+        resistance = df["High"].iloc[-(cfg.MARKUP_BREAKOUT_WINDOW + 1):-1].max()
+        close_today = float(df["Close"].iloc[-1])
+        is_breakout = close_today > resistance
 
-        last      = df.iloc[-1]
-        prev      = df.iloc[-2]
-        vol_ratio = last.get("vol_ratio")
-        return_1d = last.get("return_1d")
-        high_5d   = prev.get("high_5d")   # high 5h sebelum hari ini (sudah shift di fetcher)
-        net_5d    = net_lookup.get(ticker)
+        vol_ratio = indicators.volume_ratio(df, cfg.MARKUP_VOLUME_AVG_WINDOW).iloc[-1]
+        is_volume_confirmed = pd.notna(vol_ratio) and vol_ratio >= cfg.MARKUP_VOLUME_RATIO_MIN
 
-        if vol_ratio is None or pd.isna(vol_ratio): return None
-        if return_1d is None or pd.isna(return_1d): return None
+        obv_series = indicators.obv(df)
+        obv_now = obv_series.iloc[-1]
+        obv_recent_max = obv_series.iloc[-(cfg.MARKUP_BREAKOUT_WINDOW + 1):-1].max()
+        is_obv_confirmed = obv_now >= obv_recent_max
 
-        # --- FILTER VOLUME: wajib spike ---
-        if vol_ratio < cfg.MARKUP_VOLUME_RATIO_MIN:
-            return None
+        if not (is_breakout and is_volume_confirmed and is_obv_confirmed):
+            continue
 
-        # --- FILTER BREAKOUT: salah satu ---
-        price_jump = return_1d >= cfg.MARKUP_PRICE_BREAKOUT
-        breakout   = (
-            high_5d is not None
-            and not pd.isna(high_5d)
-            and last["Close"] > high_5d
-        )
-        if not (price_jump or breakout):
-            return None
+        strength = 7.0 + min(2.0, vol_ratio - cfg.MARKUP_VOLUME_RATIO_MIN)
+        strength = round(min(10.0, strength), 1)
 
-        strength = _strength(vol_ratio, return_1d, price_jump, breakout, net_5d)
+        note = f"Breakout resistance {resistance:.0f}, volume {vol_ratio:.1f}x, OBV konfirmasi"
 
-        notes = [f"Vol {vol_ratio:.2f}x avg"]
-        if price_jump:
-            notes.append(f"Harga {return_1d*100:+.2f}% hari ini")
-        if breakout:
-            notes.append(f"Breakout high {cfg.MARKUP_BREAKOUT_WINDOW}h")
-        if net_5d is not None and net_5d > 0:
-            notes.append(f"Net buy asing Rp {net_5d/1e9:.1f}M")
+        rows.append({
+            "ticker": ticker,
+            "close": close_today,
+            "strength": strength,
+            "note": note,
+            "signal": "Mark Up",
+        })
 
-        return {
-            "ticker"    : ticker,
-            "signal"    : "Mark Up",
-            "net_5d"    : net_5d,
-            "return_1d" : round(return_1d * 100, 2),
-            "change_5d" : round(last.get("change_5d", 0) * 100, 2),
-            "close"     : round(last["Close"], 0),
-            "volume"    : int(last["Volume"]),
-            "vol_ratio" : round(vol_ratio, 2),
-            "breakout"  : breakout,
-            "price_jump": price_jump,
-            "strength"  : strength,
-            "note"      : " | ".join(notes),
-        }
-    except Exception as e:
-        logger.debug(f"Mark Up {ticker}: {e}")
-        return None
-
-
-def _strength(vol_ratio, return_1d, price_jump, breakout, net_5d) -> float:
-    """
-    Skor 0–100:
-      40% → besarnya volume spike
-      30% → kualitas breakout (double confirm lebih tinggi)
-      20% → magnitude kenaikan harga
-      10% → konfirmasi net buy asing
-    """
-    s = 0.0
-
-    # Volume (40%)
-    s += min(vol_ratio / cfg.MARKUP_VOLUME_RATIO_MIN, 3.0) * (40 / 3)
-
-    # Breakout (30%)
-    if price_jump and breakout: s += 30
-    elif price_jump:            s += 20
-    elif breakout:              s += 15
-
-    # Magnitude harga (20%)
-    if   return_1d >= 0.07: s += 20
-    elif return_1d >= 0.05: s += 15
-    elif return_1d >= 0.03: s += 10
-
-    # Net buy asing konfirmasi (10%)
-    if net_5d is not None and net_5d > 0:
-        s += 10
-
-    return round(min(s, 100), 1)
-
-
-def _build_net_lookup(foreign_flow: pd.DataFrame) -> dict:
-    if foreign_flow.empty or "net_5d" not in foreign_flow.columns:
-        return {}
-    return foreign_flow.groupby("ticker")["net_5d"].last().to_dict()
+    result = pd.DataFrame(rows)
+    if not result.empty:
+        result = result.sort_values("strength", ascending=False).reset_index(drop=True)
+    return result

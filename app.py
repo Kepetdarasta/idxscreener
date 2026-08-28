@@ -1,12 +1,12 @@
 # =============================================================================
-# app.py — Dashboard Streamlit IDX Screener V2
+# app.py — Dashboard Streamlit: IDX Screener ADMD
 #
-# Cara jalankan:
-#   streamlit run app.py
+# Taruh file ini di ROOT project (sejajar dengan etl_pipeline.py), supaya
+# gampang di-deploy ke Streamlit Community Cloud (main file = app.py).
 #
-# Butuh:
-#   - DATABASE_URL di file .env (sama seperti yang dipakai etl_pipeline.py)
-#   - pip install streamlit psycopg2-binary pandas python-dotenv plotly
+# Koneksi database baca dari st.secrets["DATABASE_URL"] kalau di-deploy di
+# Streamlit Cloud, atau fallback ke .env (DATABASE_URL) kalau dijalankan
+# lokal — jadi satu file ini jalan di dua tempat tanpa ubah kode.
 # =============================================================================
 
 import os
@@ -14,275 +14,164 @@ from datetime import date
 
 import pandas as pd
 import psycopg2
-import streamlit as st
 import plotly.express as px
-from dotenv import load_dotenv
+import streamlit as st
 
-load_dotenv()
-
-st.set_page_config(
-    page_title="IDX Screener — ADMD",
-    page_icon="📊",
-    layout="wide",
-)
-
-SIGNAL_COLORS = {
-    "accumulation": "#22c55e",
-    "markup": "#3b82f6",
-    "distribution": "#f97316",
-    "markdown": "#ef4444",
-    "unknown": "#94a3b8",
-}
-PHASE_LABEL = {
-    "accumulation": "🟢 Akumulasi",
-    "markup": "🔵 Mark Up",
-    "distribution": "🟠 Distribusi",
-    "markdown": "🔴 Mark Down",
-    "unknown": "⚪ Unknown",
-}
-
-
-# -----------------------------------------------------------------------------
+# =============================================================================
 # KONEKSI DATABASE
-# -----------------------------------------------------------------------------
-@st.cache_resource
-def get_conn():
+# =============================================================================
+
+def get_database_url() -> str:
+    # Streamlit Cloud: disimpan di Settings → Secrets
+    if "DATABASE_URL" in st.secrets:
+        return st.secrets["DATABASE_URL"]
+
+    # Lokal: fallback ke .env
+    from dotenv import load_dotenv
+    load_dotenv()
     url = os.getenv("DATABASE_URL")
     if not url:
-        st.error(
-            "DATABASE_URL tidak ditemukan. Pastikan file .env berisi "
-            "DATABASE_URL dan berada di folder yang sama dengan app.py."
-        )
+        st.error("DATABASE_URL tidak ditemukan — cek .env (lokal) atau Secrets (Streamlit Cloud).")
         st.stop()
-    return psycopg2.connect(url)
+    return url
 
 
-@st.cache_data(ttl=300)
-def load_screening_latest() -> pd.DataFrame:
-    conn = get_conn()
+@st.cache_resource
+def get_connection():
+    return psycopg2.connect(get_database_url())
+
+
+@st.cache_data(ttl=300)  # cache 5 menit — cukup untuk data EOD, tidak query berulang tiap interaksi
+def query(sql: str, params: tuple = None) -> pd.DataFrame:
+    conn = get_connection()
     try:
-        return pd.read_sql("SELECT * FROM v_screening_latest", conn)
-    except Exception as e:
-        st.error(f"Gagal load v_screening_latest: {e}")
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=300)
-def load_active_phases() -> pd.DataFrame:
-    conn = get_conn()
-    try:
-        return pd.read_sql("SELECT * FROM v_active_phases", conn)
-    except Exception as e:
-        st.error(f"Gagal load v_active_phases: {e}")
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=300)
-def load_phase_history(stock_code: str) -> pd.DataFrame:
-    conn = get_conn()
-    try:
-        return pd.read_sql(
-            """
-            SELECT phase, phase_start, phase_end, price_at_start,
-                   price_at_end, price_change_pct, duration_days,
-                   ff_net_cumulative
-            FROM phase_history
-            WHERE stock_code = %(code)s
-            ORDER BY phase_start ASC
-            """,
-            conn,
-            params={"code": stock_code},
-        )
-    except Exception as e:
-        st.error(f"Gagal load phase_history: {e}")
-        return pd.DataFrame()
-
-
-@st.cache_data(ttl=300)
-def load_all_stock_codes() -> list[str]:
-    conn = get_conn()
-    try:
-        df = pd.read_sql(
-            "SELECT DISTINCT stock_code FROM screening_results ORDER BY stock_code",
-            conn,
-        )
-        return df["stock_code"].tolist()
+        return pd.read_sql(sql, conn, params=params)
     except Exception:
-        return []
+        # Koneksi mungkin putus (Neon serverless suka auto-sleep) — reconnect sekali
+        st.cache_resource.clear()
+        conn = get_connection()
+        return pd.read_sql(sql, conn, params=params)
 
 
-# -----------------------------------------------------------------------------
-# HEADER
-# -----------------------------------------------------------------------------
-st.title("📊 IDX Screener — Sinyal ADMD")
-st.caption(
-    "Akumulasi · Mark Up · Distribusi · Mark Down — berdasarkan harga, "
-    "volume, dan foreign flow"
-)
+# =============================================================================
+# PAGE CONFIG
+# =============================================================================
 
-df_latest = load_screening_latest()
+st.set_page_config(page_title="IDX Screener — ADMD", page_icon="📈", layout="wide")
+st.title("📈 IDX Screener — ADMD")
 
-if df_latest.empty:
-    st.warning(
-        "Belum ada data di tabel `screening_results`. Jalankan "
-        "`python etl_pipeline.py` dulu untuk mengisi data, lalu refresh halaman ini."
-    )
-    st.stop()
+tab_screening, tab_phase = st.tabs(["🔍 Screening", "📊 Histori Fase"])
 
-screen_date = df_latest["screen_date"].max()
-st.info(f"Data screening terbaru: **{screen_date}**")
+# =============================================================================
+# TAB 1 — SCREENING HARI INI (dengan filter)
+# =============================================================================
 
-# -----------------------------------------------------------------------------
-# SIDEBAR — FILTER
-# -----------------------------------------------------------------------------
-st.sidebar.header("🔍 Filter")
+with tab_screening:
+    available_dates = query("""
+        SELECT DISTINCT screen_date FROM screening_results
+        ORDER BY screen_date DESC LIMIT 60
+    """)
 
-phase_options = sorted(df_latest["phase"].dropna().unique().tolist())
-selected_phases = st.sidebar.multiselect(
-    "Fase",
-    options=phase_options,
-    default=phase_options,
-    format_func=lambda p: PHASE_LABEL.get(p, p),
-)
+    if available_dates.empty:
+        st.warning("Belum ada data screening. Jalankan etl_pipeline.py dulu.")
+        st.stop()
 
-sector_options = sorted(df_latest["sector"].dropna().unique().tolist())
-selected_sectors = st.sidebar.multiselect(
-    "Sektor",
-    options=sector_options,
-    default=sector_options,
-)
+    col1, col2, col3, col4 = st.columns([1.2, 1.5, 1.5, 1])
 
-min_score = st.sidebar.slider("Minimal Signal Score", 0, 100, 0)
+    with col1:
+        selected_date = st.selectbox(
+            "Tanggal screening",
+            available_dates["screen_date"],
+            format_func=lambda d: d.strftime("%d %b %Y"),
+        )
 
-search_ticker = st.sidebar.text_input("Cari kode saham (misal BBCA)").upper().strip()
+    df = query("""
+        SELECT sr.stock_code, s.stock_name, s.sector, sr.close_price, sr.phase,
+               sr.signal_type, sr.signal_score, sr.range_high, sr.range_low,
+               sr.entry_price, sr.stop_loss, sr.target_price, sr.risk_reward_ratio
+        FROM screening_results sr
+        JOIN stocks s ON s.stock_code = sr.stock_code
+        WHERE sr.screen_date = %(d)s
+        ORDER BY sr.signal_score DESC
+    """, params={"d": selected_date})
 
-# Terapkan filter
-df_filtered = df_latest[
-    df_latest["phase"].isin(selected_phases)
-    & df_latest["sector"].isin(selected_sectors)
-    & (df_latest["signal_score"].fillna(0) >= min_score)
-]
-if search_ticker:
-    df_filtered = df_filtered[df_filtered["stock_code"].str.contains(search_ticker)]
+    with col2:
+        phase_options = sorted(df["phase"].dropna().unique().tolist())
+        selected_phases = st.multiselect("Filter fase", phase_options, default=phase_options)
 
-# -----------------------------------------------------------------------------
-# RINGKASAN / METRIC
-# -----------------------------------------------------------------------------
-st.subheader("Ringkasan Hari Ini")
-cols = st.columns(4)
-for col, phase in zip(cols, ["accumulation", "markup", "distribution", "markdown"]):
-    count = int((df_latest["phase"] == phase).sum())
-    col.metric(PHASE_LABEL[phase], count)
+    with col3:
+        signal_options = sorted(df["signal_type"].dropna().unique().tolist())
+        selected_signals = st.multiselect("Filter sinyal", signal_options, default=signal_options)
 
-st.divider()
+    with col4:
+        min_rr = st.number_input("Min RR (kosongkan 0 = semua)", min_value=0.0, value=0.0, step=0.5)
 
-# -----------------------------------------------------------------------------
-# TABEL HASIL SCREENING
-# -----------------------------------------------------------------------------
-st.subheader(f"Hasil Screening ({len(df_filtered)} saham)")
+    filtered = df[df["phase"].isin(selected_phases) & df["signal_type"].isin(selected_signals)]
+    if min_rr > 0:
+        # RR cuma ada untuk sinyal Mark Up — filter ini otomatis exclude sinyal lain saat RR diisi
+        filtered = filtered[filtered["risk_reward_ratio"] >= min_rr]
 
-if df_filtered.empty:
-    st.warning("Tidak ada saham yang cocok dengan filter di atas.")
-else:
-    show_cols = [
-        "stock_code", "stock_name", "sector", "phase", "signal_type",
-        "signal_score", "close_price", "volume_ratio",
-        "ff_net_3d", "ff_net_5d", "ff_net_20d",
-        "ff_net_today", "ff_value_today",
-    ]
-    show_cols = [c for c in show_cols if c in df_filtered.columns]
-    df_display = df_filtered[show_cols].sort_values("signal_score", ascending=False)
-    df_display["phase"] = df_display["phase"].map(lambda p: PHASE_LABEL.get(p, p))
+    st.caption(f"{len(filtered)} dari {len(df)} sinyal ditampilkan")
 
+    display_cols = {
+        "stock_code": "Ticker", "stock_name": "Nama", "sector": "Sektor",
+        "close_price": "Close", "phase": "Fase", "signal_type": "Sinyal",
+        "signal_score": "Skor", "entry_price": "Entry", "stop_loss": "Stop Loss",
+        "target_price": "Target", "risk_reward_ratio": "RR",
+    }
     st.dataframe(
-        df_display,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "signal_score": st.column_config.ProgressColumn(
-                "Score", min_value=0, max_value=100, format="%d"
-            ),
-        },
-    )
-
-    # Distribusi sinyal
-    fig_pie = px.pie(
-        df_latest,
-        names="phase",
-        title="Distribusi Fase — Seluruh Universe",
-        color="phase",
-        color_discrete_map=SIGNAL_COLORS,
-    )
-    st.plotly_chart(fig_pie, use_container_width=True)
-
-st.divider()
-
-# -----------------------------------------------------------------------------
-# FASE AKTIF (BERAPA LAMA SUDAH DI FASE INI)
-# -----------------------------------------------------------------------------
-st.subheader("📅 Saham dalam Fase Aktif")
-df_active = load_active_phases()
-
-if df_active.empty:
-    st.caption("Belum ada data fase aktif.")
-else:
-    df_active_display = df_active.copy()
-    df_active_display["phase"] = df_active_display["phase"].map(
-        lambda p: PHASE_LABEL.get(p, p)
-    )
-    st.dataframe(
-        df_active_display,
+        filtered[list(display_cols.keys())].rename(columns=display_cols),
         use_container_width=True,
         hide_index=True,
     )
 
-st.divider()
+    # Ringkasan cepat per fase
+    st.subheader("Ringkasan per fase")
+    summary = df.groupby("phase").size().reset_index(name="jumlah")
+    st.bar_chart(summary.set_index("phase"))
 
-# -----------------------------------------------------------------------------
-# DETAIL PER SAHAM — TIMELINE PERGERAKAN FASE
-# -----------------------------------------------------------------------------
-st.subheader("📈 Riwayat Pergerakan Fase per Saham")
+# =============================================================================
+# TAB 2 — HISTORI FASE PER SAHAM
+# =============================================================================
 
-all_codes = load_all_stock_codes()
-if not all_codes:
-    all_codes = sorted(df_latest["stock_code"].unique().tolist())
+with tab_phase:
+    all_tickers = query("SELECT stock_code FROM stocks ORDER BY stock_code")["stock_code"].tolist()
+    ticker = st.selectbox("Pilih saham", all_tickers)
 
-selected_stock = st.selectbox("Pilih saham", options=all_codes)
+    phase_df = query("""
+        SELECT phase, phase_start, phase_end, price_at_start, price_at_end,
+               price_change_pct, duration_days
+        FROM phase_history
+        WHERE stock_code = %(t)s
+        ORDER BY phase_start
+    """, params={"t": ticker})
 
-if selected_stock:
-    df_hist = load_phase_history(selected_stock)
-    if df_hist.empty:
-        st.caption(f"Belum ada riwayat fase untuk {selected_stock}.")
+    if phase_df.empty:
+        st.info(f"Belum ada histori fase untuk {ticker}.")
     else:
-        df_hist = df_hist.copy()
-        df_hist["phase_end_display"] = df_hist["phase_end"].fillna(pd.Timestamp(date.today()))
-        df_hist["phase_label"] = df_hist["phase"].map(lambda p: PHASE_LABEL.get(p, p))
+        # Fase yang masih berjalan (phase_end NULL) digambar sampai hari ini
+        phase_df["phase_end_display"] = phase_df["phase_end"].fillna(pd.Timestamp(date.today()))
 
-        fig_timeline = px.timeline(
-            df_hist,
+        fig = px.timeline(
+            phase_df,
             x_start="phase_start",
             x_end="phase_end_display",
-            y="phase_label",
+            y="phase",
             color="phase",
-            color_discrete_map=SIGNAL_COLORS,
-            title=f"Timeline Fase — {selected_stock}",
+            color_discrete_map={
+                "accumulation": "#22c55e",
+                "markup": "#3b82f6",
+                "distribution": "#f97316",
+                "markdown": "#ef4444",
+            },
             hover_data=["price_at_start", "price_at_end", "price_change_pct", "duration_days"],
+            title=f"Timeline fase — {ticker}",
         )
-        fig_timeline.update_yaxes(title="")
-        st.plotly_chart(fig_timeline, use_container_width=True)
+        fig.update_yaxes(autorange="reversed")
+        st.plotly_chart(fig, use_container_width=True)
 
         st.dataframe(
-            df_hist[
-                ["phase", "phase_start", "phase_end", "duration_days",
-                 "price_at_start", "price_at_end", "price_change_pct",
-                 "ff_net_cumulative"]
-            ],
+            phase_df.drop(columns=["phase_end_display"]),
             use_container_width=True,
             hide_index=True,
         )
-
-st.divider()
-st.caption(
-    "Data foreign flow dalam satuan rupiah. "
-    "`phase_end = NULL` artinya saham masih berada di fase tersebut."
-)

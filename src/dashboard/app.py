@@ -1,17 +1,25 @@
 # =============================================================================
-# src/dashboard/app.py — IDX Screener ADMD
-# Fix: hasil tidak hilang saat apapun berubah di sidebar
+# src/dashboard/app.py — IDX Screener ADMD (V2 — baca dari Neon PostgreSQL)
+#
+# Dashboard ini TIDAK menjalankan screener secara live. Semua data (OHLCV,
+# foreign flow, sinyal, fase) berasal dari database yang diisi oleh
+# etl_pipeline.py (dijalankan otomatis tiap hari via GitHub Actions).
+#
+# Cara jalankan:
+#   streamlit run src/dashboard/app.py
+#
+# Butuh DATABASE_URL di .env (sama seperti etl_pipeline.py).
 # =============================================================================
 
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from datetime import date
 import pandas as pd
 import streamlit as st
 
 import config as cfg
+from src.dashboard import db
 from src.dashboard.components import render_ohlcv_chart, render_foreign_flow_chart
 
 st.set_page_config(
@@ -30,23 +38,36 @@ div[data-testid="stMetric"] {
 </style>
 """, unsafe_allow_html=True)
 
-SIGNAL_COLOR = {"Akumulasi":"#22c55e","Distribusi":"#f97316","Mark Up":"#3b82f6","Mark Down":"#ef4444"}
-SIGNAL_EMOJI = {"Akumulasi":"🟢","Distribusi":"🟠","Mark Up":"🔵","Mark Down":"🔴"}
+SIGNAL_COLOR = {"Akumulasi": "#22c55e", "Distribusi": "#f97316", "Mark Up": "#3b82f6", "Mark Down": "#ef4444"}
+SIGNAL_EMOJI = {"Akumulasi": "🟢", "Distribusi": "🟠", "Mark Up": "🔵", "Mark Down": "🔴"}
+PHASE_TO_SIGNAL = {
+    "accumulation": "Akumulasi",
+    "distribution": "Distribusi",
+    "markup": "Mark Up",
+    "markdown": "Mark Down",
+}
 
 # =============================================================================
-# SESSION STATE — inisialisasi SEMUA key di sini, SEKALI
+# LOAD DATA — sekali di awal, sudah di-cache oleh db.py (ttl 5 menit)
 # =============================================================================
 
-for k, v in {
-    "results_df"      : pd.DataFrame(),
-    "ohlcv_cache"     : {},
-    "foreign_df"      : pd.DataFrame(),
-    "has_foreign"     : False,
-    "screening_done"  : False,
-    "selected_ticker" : None,
-}.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
+try:
+    df_latest = db.get_latest_screening()
+except Exception as e:
+    st.error(
+        "❌ Gagal konek ke database. Cek DATABASE_URL di file .env.\n\n"
+        f"Detail error: {e}"
+    )
+    st.stop()
+
+if df_latest.empty:
+    st.warning(
+        "⚠️ Belum ada data screening di database. "
+        "Jalankan `python etl_pipeline.py` dulu untuk mengisi data."
+    )
+    st.stop()
+
+latest_date = df_latest["screen_date"].iloc[0]
 
 # =============================================================================
 # SIDEBAR
@@ -56,306 +77,213 @@ with st.sidebar:
     st.title("⚙️ Kontrol")
     st.markdown("---")
 
-    # Universe — simpan ke session state, TIDAK trigger re-screening otomatis
-    universe_opt = st.selectbox(
-        "Universe Saham",
-        ["LQ45","IDX High Dividend 20","Custom"],
-        key="universe_select",
+    st.caption(f"📅 Data terbaru: **{latest_date}**")
+
+    try:
+        last_run = db.get_last_etl_run()
+        if not last_run.empty:
+            r = last_run.iloc[0]
+            status_emoji = "✅" if r["status"] == "success" else "⚠️"
+            st.caption(f"{status_emoji} ETL terakhir: {r['finished_at']}")
+    except Exception:
+        pass
+
+    st.markdown("---")
+
+    sector_opt = st.multiselect(
+        "Sektor",
+        sorted(df_latest["sector"].dropna().unique().tolist()),
+        default=[],
+        help="Kosongkan untuk tampilkan semua sektor",
     )
-    if universe_opt == "LQ45":
-        tickers = cfg.LQ45
-    elif universe_opt == "IDX High Dividend 20":
-        tickers = cfg.IDXHIDIV20
-    else:
-        raw = st.text_area("Ticker (pisah koma)", "BBCA,BBRI,TLKM,ASII,BMRI", height=80)
-        tickers = [t.strip().upper() for t in raw.replace("\n",",").split(",") if t.strip()]
-    st.caption(f"📋 {len(tickers)} saham")
 
-    st.markdown("---")
-
-    # Data asing
-    st.subheader("📂 Data Asing (Opsional)")
-    uploaded_file = st.file_uploader("Upload CSV foreign flow", type=["csv"])
-    if uploaded_file is not None:
-        try:
-            p = cfg.DATA_RAW_DIR / f"foreign_flow_{date.today().strftime('%Y%m%d')}.csv"
-            p.write_bytes(uploaded_file.getvalue())
-            from src.data_fetcher.idx_foreign_parser import load_foreign_flow
-            ff = load_foreign_flow(tickers, days=5)
-            if not ff.empty:
-                st.session_state.foreign_df  = ff
-                st.session_state.has_foreign = True
-                st.success(f"✅ {ff['ticker'].nunique()} saham dimuat")
-            else:
-                st.warning("⚠ Tidak terbaca — cek format")
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-    if not st.session_state.has_foreign:
-        from src.data_fetcher.idx_foreign_parser import _get_sorted_files, load_foreign_flow
-        if _get_sorted_files():
-            try:
-                ff = load_foreign_flow(tickers, days=5)
-                if not ff.empty:
-                    st.session_state.foreign_df  = ff
-                    st.session_state.has_foreign = True
-            except Exception:
-                pass
-
-    st.info("✅ Foreign flow aktif" if st.session_state.has_foreign else "❌ Mode harga & volume")
-
-    st.markdown("---")
-
-    # Filter
     show_signals = st.multiselect(
         "Tampilkan sinyal",
-        ["Akumulasi","Distribusi","Mark Up","Mark Down"],
-        default=["Akumulasi","Distribusi","Mark Up","Mark Down"],
-        key="show_signals",
+        ["Akumulasi", "Distribusi", "Mark Up", "Mark Down"],
+        default=["Akumulasi", "Distribusi", "Mark Up", "Mark Down"],
     )
-    min_strength = st.slider("Min. Strength", 0, 100, 0, 5, key="min_strength")
+
+    min_score = st.slider("Min. Signal Score", 0, 100, 0, 5)
 
     st.markdown("---")
-    use_cache  = st.toggle("Gunakan cache OHLCV", value=True, key="use_cache")
-
-    # Tombol screening — SATU-SATUNYA trigger yang menjalankan ulang screening
-    run_button = st.button("🔍 Jalankan Screening",
-                           use_container_width=True, type="primary", key="run_btn")
-    st.markdown("---")
-    st.caption("📡 Harga: Yahoo Finance")
+    st.caption("📡 Sumber data: Neon PostgreSQL (hasil ETL harian)")
 
 
-# =============================================================================
-# JALANKAN SCREENING — hanya saat tombol diklik
-# Semua hasil disimpan ke session state dan TIDAK berubah sampai tombol diklik lagi
-# =============================================================================
-
-if run_button:
-    with st.spinner("⏳ Mengambil data & mendeteksi sinyal..."):
-        try:
-            from src.data_fetcher.yfinance_fetcher import fetch_ohlcv
-            from src.signals import accumulation, distribution, markup, markdown
-
-            ohlcv = fetch_ohlcv(list(tickers), use_cache=use_cache)
-            ff    = st.session_state.foreign_df
-
-            FN_MAP = {
-                "Akumulasi" : accumulation.detect,
-                "Distribusi": distribution.detect,
-                "Mark Up"   : markup.detect,
-                "Mark Down" : markdown.detect,
-            }
-
-            parts = []
-            for name, fn in FN_MAP.items():
-                r = fn(ohlcv, ff)
-                if not r.empty:
-                    parts.append(r)
-
-            combined = pd.concat(parts, ignore_index=True) \
-                         .sort_values(["signal","strength"], ascending=[True,False]) \
-                         .reset_index(drop=True) if parts else pd.DataFrame()
-
-            # Simpan ke session state
-            st.session_state.ohlcv_cache    = ohlcv
-            st.session_state.results_df     = combined
-            st.session_state.screening_done = True
-
-            n    = len(combined)
-            mode = "lengkap" if st.session_state.has_foreign else "harga+volume"
-            st.success(f"✅ Selesai — **{n} sinyal** dari {len(ohlcv)} saham (mode: {mode}).")
-
-        except Exception as e:
-            st.error(f"❌ Error: {e}")
-            st.exception(e)
-
+# Terapkan filter sidebar ke df_latest
+filtered = df_latest.copy()
+if sector_opt:
+    filtered = filtered[filtered["sector"].isin(sector_opt)]
+if show_signals:
+    filtered = filtered[filtered["signal_type"].isin(show_signals)]
+filtered = filtered[filtered["signal_score"] >= min_score]
 
 # =============================================================================
-# MAIN CONTENT
-# Selalu render berdasarkan session state — TIDAK peduli apa yang berubah di sidebar
+# HEADER
 # =============================================================================
 
 st.title("📊 IDX Screener — ADMD")
-st.caption("Akumulasi · Distribusi · Mark Up · Mark Down")
+st.caption(f"Akumulasi · Distribusi · Mark Up · Mark Down — data per {latest_date}")
+st.markdown("---")
 
-if st.session_state.has_foreign:
-    st.success("✅ **Mode lengkap** — harga, volume & foreign flow.")
-else:
-    st.warning("⚠️ **Mode harga & volume** — upload CSV asing di sidebar untuk hasil lebih akurat.")
+cols = st.columns(4)
+for i, (sig, emoji) in enumerate(SIGNAL_EMOJI.items()):
+    cols[i].metric(f"{emoji} {sig}", f"{len(df_latest[df_latest['signal_type'] == sig])} saham")
 
 st.markdown("---")
 
-# ── Belum pernah screening ────────────────────────────────────────────────────
-if not st.session_state.screening_done:
-    st.info("👈 Pilih universe & klik **Jalankan Screening** di sidebar untuk memulai.")
-    with st.expander("ℹ️ Cara kerja 4 sinyal ADMD", expanded=True):
-        c1, c2 = st.columns(2)
-        c1.markdown("""
-**🟢 Akumulasi** — bandar kumpulkan diam-diam
-- Net buy asing ≥ Rp 200M (5h) *(jika ada data asing)*
-- Harga naik pelan –1% s/d +5%
-- Volume tidak meledak
+tab1, tab2, tab3, tab4 = st.tabs(["📋 Screening Terbaru", "⏳ Fase Aktif", "🔍 Detail Saham", "📂 Export"])
 
-**🔵 Mark Up** — fase pompa
-- Volume ≥ 1.5× rata-rata 20 hari
-- Harga +3% dalam 1 hari ATAU breakout high 5h
-""")
-        c2.markdown("""
-**🟠 Distribusi** — bandar buang ke ritel
-- Net sell asing ≥ Rp 150M (5h) *(jika ada data asing)*
-- Harga stagnan –10% s/d +2%
-- Volume masih tinggi (ritel aktif beli)
+# =============================================================================
+# TAB 1 — SCREENING TERBARU
+# =============================================================================
 
-**🔴 Mark Down** — fase dump, hindari
-- Harga turun ≥ 5% dalam 3 hari
-- Volume tinggi = konfirmasi tekanan jual
-""")
-
-# ── Sudah ada hasil — tampilkan SELALU dari session state ─────────────────────
-else:
-    df          = st.session_state.results_df
-    ohlcv_cache = st.session_state.ohlcv_cache
-
-    if df.empty:
-        st.info("Tidak ada sinyal ditemukan. Coba ubah filter atau jalankan ulang.")
-
+with tab1:
+    if filtered.empty:
+        st.info("Tidak ada saham sesuai filter.")
     else:
-        # Metrik
-        cols = st.columns(4)
-        for i, (sig, emoji) in enumerate(SIGNAL_EMOJI.items()):
-            cols[i].metric(f"{emoji} {sig}", f"{len(df[df['signal']==sig])} saham")
-
-        st.markdown("---")
-
-        tab1, tab2, tab3 = st.tabs(["📋 Tabel Sinyal","🔍 Detail Saham","📂 Export Data"])
-
-        # ── TAB 1: TABEL ─────────────────────────────────────────────────────
-        with tab1:
-            # Filter show_signals dari sidebar
-            filtered = df[df["signal"].isin(show_signals)].copy() if show_signals else df.copy()
-            if min_strength > 0:
-                filtered = filtered[filtered["strength"] >= min_strength]
-
-            if filtered.empty:
-                st.info("Tidak ada sinyal sesuai filter.")
-            else:
-                no_foreign = "data_asing" in filtered.columns and not filtered["data_asing"].any()
-                if no_foreign:
-                    st.info("⚠️ Mode harga & volume — strength maks 70 untuk Akumulasi/Distribusi.")
-
-                for signal in ["Akumulasi","Distribusi","Mark Up","Mark Down"]:
-                    if signal not in show_signals:
-                        continue
-                    subset = filtered[filtered["signal"] == signal].copy()
-                    if subset.empty:
-                        continue
-
-                    st.markdown(
-                        f'<h3 style="color:{SIGNAL_COLOR[signal]};margin-top:1.5rem">'
-                        f'{SIGNAL_EMOJI[signal]} {signal} '
-                        f'<span style="font-size:14px;color:#94a3b8">({len(subset)} saham)</span>'
-                        f'</h3>', unsafe_allow_html=True,
-                    )
-
-                    col_map = {
-                        "ticker":"Ticker","close":"Harga","strength":"Str",
-                        "change_5d":"Δ5h (%)","vol_ratio":"Vol Ratio","note":"Catatan",
-                    }
-                    if st.session_state.has_foreign: col_map["net_5d"]    = "Net Asing 5h"
-                    if signal == "Mark Up":          col_map["return_1d"] = "Return 1h (%)"
-                    if signal == "Mark Down":        col_map["change_3d"] = "Δ3h (%)"
-
-                    avail = {k:v for k,v in col_map.items() if k in subset.columns}
-                    show  = subset[list(avail)].rename(columns=avail).copy()
-
-                    if "Harga"        in show: show["Harga"]        = show["Harga"].apply(lambda x: f"Rp {x:,.0f}")
-                    if "Net Asing 5h" in show: show["Net Asing 5h"] = show["Net Asing 5h"].apply(lambda x: f"Rp {x/1e9:+.1f}M" if pd.notna(x) else "—")
-                    if "Str"          in show: show["Str"]          = show["Str"].apply(lambda x: f"{x:.1f}")
-
-                    st.dataframe(show, use_container_width=True, hide_index=True)
-
-        # ── TAB 2: DETAIL ────────────────────────────────────────────────────
-        with tab2:
-            all_tickers = sorted(df["ticker"].unique())
-
-            # Jaga pilihan saham agar tidak reset
-            if st.session_state.selected_ticker not in all_tickers:
-                st.session_state.selected_ticker = all_tickers[0]
-
-            selected = st.selectbox(
-                "Pilih saham",
-                all_tickers,
-                index=all_tickers.index(st.session_state.selected_ticker),
-                key="ticker_select",
-            )
-            st.session_state.selected_ticker = selected
-
-            row   = df[df["ticker"] == selected].iloc[0]
-            color = SIGNAL_COLOR.get(row["signal"], "#64748b")
-            emoji = SIGNAL_EMOJI.get(row["signal"], "⚪")
+        for signal in ["Akumulasi", "Distribusi", "Mark Up", "Mark Down"]:
+            if signal not in show_signals:
+                continue
+            subset = filtered[filtered["signal_type"] == signal].copy()
+            if subset.empty:
+                continue
 
             st.markdown(
-                f'<h2>{selected}&nbsp;'
-                f'<span style="background:{color};color:white;'
-                f'padding:3px 16px;border-radius:14px;font-size:16px">'
-                f'{emoji} {row["signal"]}</span></h2>',
-                unsafe_allow_html=True,
+                f'<h3 style="color:{SIGNAL_COLOR[signal]};margin-top:1.5rem">'
+                f'{SIGNAL_EMOJI[signal]} {signal} '
+                f'<span style="font-size:14px;color:#94a3b8">({len(subset)} saham)</span>'
+                f'</h3>', unsafe_allow_html=True,
             )
 
-            if "data_asing" in row and not row["data_asing"] \
-                    and row["signal"] in ["Akumulasi","Distribusi"]:
-                st.warning("⚠️ Tanpa konfirmasi data asing — cek RTI/Stockbit sebelum keputusan.")
+            show = subset[[
+                "stock_code", "stock_name", "sector", "close_price",
+                "signal_score", "ff_net_5d", "ff_net_20d",
+            ]].rename(columns={
+                "stock_code": "Ticker", "stock_name": "Nama", "sector": "Sektor",
+                "close_price": "Harga", "signal_score": "Score",
+                "ff_net_5d": "Net Asing 5h (lot)", "ff_net_20d": "Net Asing 20h (lot)",
+            }).copy()
+            show["Harga"] = show["Harga"].apply(lambda x: f"Rp {x:,.0f}")
 
-            m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Harga",    f"Rp {row['close']:,.0f}")
-            m2.metric("Strength", f"{row['strength']:.1f}/100")
-            if pd.notna(row.get("change_5d")): m3.metric("Δ 5 Hari",     f"{row['change_5d']:+.2f}%")
-            if pd.notna(row.get("net_5d")):    m4.metric("Net Asing 5h", f"Rp {row['net_5d']/1e9:+.1f}M")
+            st.dataframe(show, use_container_width=True, hide_index=True)
 
-            st.progress(int(row["strength"]), text=f"Strength: {row['strength']:.1f}/100")
-            if row.get("note"):
-                st.info(f"📌 {row['note']}")
+# =============================================================================
+# TAB 2 — FASE AKTIF
+# =============================================================================
 
-            if selected in ohlcv_cache:
-                st.markdown("#### Chart Harga & Volume")
-                render_ohlcv_chart(selected, ohlcv_cache[selected])
-            else:
-                st.info("Chart tidak tersedia — jalankan screening ulang.")
+with tab2:
+    try:
+        df_phase = db.get_active_phases()
+    except Exception as e:
+        st.error(f"Gagal ambil data fase aktif: {e}")
+        df_phase = pd.DataFrame()
 
-            foreign = st.session_state.foreign_df
-            if not foreign.empty and selected in foreign["ticker"].values:
-                st.markdown("#### Net Buy/Sell Asing Harian")
-                render_foreign_flow_chart(selected, foreign)
+    if df_phase.empty:
+        st.info("Belum ada data fase aktif.")
+    else:
+        df_phase = df_phase.copy()
+        df_phase["signal_name"] = df_phase["phase"].map(PHASE_TO_SIGNAL).fillna(df_phase["phase"])
+        df_phase["price_change_pct"] = (
+            (df_phase["current_price"] - df_phase["price_at_start"]) / df_phase["price_at_start"] * 100
+        ).round(2)
 
-        # ── TAB 3: EXPORT ────────────────────────────────────────────────────
-        with tab3:
-            st.subheader("Export Hasil Screening")
-            st.dataframe(df, use_container_width=True)
+        for phase_key, signal in PHASE_TO_SIGNAL.items():
+            subset = df_phase[df_phase["phase"] == phase_key].sort_values("days_in_phase", ascending=False)
+            if subset.empty:
+                continue
 
-            c1, c2 = st.columns(2)
-            with c1:
-                st.download_button(
-                    "⬇️ Download Hasil CSV",
-                    data=df.to_csv(index=False).encode("utf-8"),
-                    file_name="idx_screener_hasil.csv",
-                    mime="text/csv",
-                    use_container_width=True,
-                )
-            with c2:
-                if not st.session_state.foreign_df.empty:
-                    st.download_button(
-                        "⬇️ Download Foreign Flow CSV",
-                        data=st.session_state.foreign_df.to_csv(index=False).encode("utf-8"),
-                        file_name="foreign_flow_data.csv",
-                        mime="text/csv",
-                        use_container_width=True,
-                    )
+            st.markdown(
+                f'<h3 style="color:{SIGNAL_COLOR[signal]};margin-top:1.5rem">'
+                f'{SIGNAL_EMOJI[signal]} {signal} '
+                f'<span style="font-size:14px;color:#94a3b8">({len(subset)} saham)</span>'
+                f'</h3>', unsafe_allow_html=True,
+            )
 
-            with st.expander("📋 Format CSV data asing"):
-                st.markdown("""
-| StockCode | ForeignBuy | ForeignSell | NetBuySell |
-|-----------|-----------|------------|-----------|
-| BBCA | 350000000000 | 100000000000 | 250000000000 |
+            show = subset[[
+                "stock_code", "stock_name", "days_in_phase",
+                "price_at_start", "current_price", "price_change_pct",
+            ]].rename(columns={
+                "stock_code": "Ticker", "stock_name": "Nama",
+                "days_in_phase": "Hari di Fase Ini",
+                "price_at_start": "Harga Masuk", "current_price": "Harga Sekarang",
+                "price_change_pct": "Δ (%)",
+            }).copy()
+            show["Harga Masuk"] = show["Harga Masuk"].apply(lambda x: f"Rp {x:,.0f}")
+            show["Harga Sekarang"] = show["Harga Sekarang"].apply(
+                lambda x: f"Rp {x:,.0f}" if pd.notna(x) else "—"
+            )
 
-Nilai dalam **Rupiah**. Nama kolom fleksibel.
-""")
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
+# =============================================================================
+# TAB 3 — DETAIL SAHAM
+# =============================================================================
+
+with tab3:
+    all_tickers = sorted(df_latest["stock_code"].unique())
+    selected = st.selectbox("Pilih saham", all_tickers, key="detail_ticker")
+
+    row = df_latest[df_latest["stock_code"] == selected].iloc[0]
+    signal = row["signal_type"]
+    color = SIGNAL_COLOR.get(signal, "#64748b")
+    emoji = SIGNAL_EMOJI.get(signal, "⚪")
+
+    st.markdown(
+        f'<h2>{selected}&nbsp;'
+        f'<span style="background:{color};color:white;'
+        f'padding:3px 16px;border-radius:14px;font-size:16px">'
+        f'{emoji} {signal or "—"}</span></h2>',
+        unsafe_allow_html=True,
+    )
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Harga", f"Rp {row['close_price']:,.0f}")
+    m2.metric("Signal Score", f"{row['signal_score']}/100" if pd.notna(row["signal_score"]) else "—")
+    if pd.notna(row.get("ff_net_5d")):
+        m3.metric("Net Asing 5h", f"{row['ff_net_5d']:,.0f} lot")
+    if pd.notna(row.get("ff_net_20d")):
+        m4.metric("Net Asing 20h", f"{row['ff_net_20d']:,.0f} lot")
+
+    st.markdown("#### Chart Harga & Volume")
+    ohlcv = db.get_ohlcv(selected, days=90)
+    if not ohlcv.empty:
+        render_ohlcv_chart(selected, ohlcv)
+    else:
+        st.info("Belum ada data OHLCV historis untuk saham ini.")
+
+    st.markdown("#### Net Buy/Sell Asing Harian")
+    ff = db.get_foreign_flow(selected, days=30)
+    if not ff.empty:
+        render_foreign_flow_chart(selected, ff)
+    else:
+        st.info("Belum ada data foreign flow untuk saham ini.")
+
+    st.markdown("#### Riwayat Fase")
+    phase_hist = db.get_phase_history(selected)
+    if not phase_hist.empty:
+        show_hist = phase_hist.copy()
+        show_hist["phase"] = show_hist["phase"].map(PHASE_TO_SIGNAL).fillna(show_hist["phase"])
+        show_hist = show_hist.rename(columns={
+            "phase": "Fase", "phase_start": "Mulai", "phase_end": "Selesai",
+            "duration_days": "Durasi (hari)", "price_at_start": "Harga Awal",
+            "price_at_end": "Harga Akhir", "price_change_pct": "Δ (%)",
+            "ff_net_cumulative": "Net Asing Kumulatif (lot)",
+        })
+        st.dataframe(show_hist, use_container_width=True, hide_index=True)
+    else:
+        st.info("Belum ada riwayat fase untuk saham ini.")
+
+# =============================================================================
+# TAB 4 — EXPORT
+# =============================================================================
+
+with tab4:
+    st.subheader("Export Hasil Screening")
+    st.dataframe(df_latest, use_container_width=True)
+    st.download_button(
+        "⬇️ Download Hasil CSV",
+        data=df_latest.to_csv(index=False).encode("utf-8"),
+        file_name=f"idx_screener_{latest_date}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )

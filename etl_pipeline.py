@@ -1,16 +1,13 @@
 # =============================================================================
 # etl_pipeline.py — ETL Pipeline Stock Screening V2
 #
-# Menghubungkan screener v1 yang sudah ada ke database PostgreSQL (Neon).
-# Jalankan manual:  python etl_pipeline.py
-# Atau otomatis via scheduler (lihat scheduler.py)
-#
-# Urutan proses:
-#   1. Sync master saham  → tabel stocks
-#   2. Fetch & simpan OHLCV harian → tabel daily_ohlcv
-#   3. Parsing & simpan foreign flow → tabel foreign_flow
-#   4. Jalankan screener ADMD → tabel screening_results
-#   5. Deteksi & update fase → tabel phase_history
+# PERUBAHAN dari versi sebelumnya (ditandai # >>> STAGE 3):
+#   Fungsi run_screener_and_save() sekarang juga mengambil kolom
+#   range_high, range_low, entry_price, stop_loss, target_price,
+#   risk_reward_ratio dari hasil screener (sudah dihitung oleh
+#   risk_manager.py di dalam screener.run_all()), dan menyimpannya
+#   ke tabel screening_results.
+# Tidak ada bagian lain yang berubah dari versi sebelumnya.
 # =============================================================================
 
 import logging
@@ -239,7 +236,8 @@ SIGNAL_TO_PHASE = {
 
 def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.DataFrame:
     """
-    Jalankan screener ADMD dari v1, simpan hasilnya ke screening_results.
+    Jalankan screener ADMD (termasuk Stage 3 risk management), simpan
+    hasilnya ke screening_results — termasuk kolom entry/stop/target/RR.
     Return DataFrame hasil screening.
     """
     logger.info(f"[4/5] Jalankan screener ADMD — {trade_date}")
@@ -257,16 +255,30 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
 
     logger.info(f"       Screener selesai: {len(df)} sinyal")
 
-    # Fetch close price dari DB untuk saham yang tidak ada di hasil screener
-    # (screener hanya return saham yang punya sinyal)
     rows = []
+    seen_tickers = set()  # >>> FIX: safety-net dedupe terakhir sebelum insert
+
     for _, row in df.iterrows():
-        ticker  = str(row["ticker"]).upper()
+        ticker  = str(row["ticker"]).upper().strip()
+
+        if ticker in seen_tickers:
+            # Duplikat lolos dari dedupe di screener.py (misal beda source/case) —
+            # skip di sini supaya INSERT tidak pernah kena duplicate key error.
+            logger.warning(f"       {ticker}: duplikat terdeteksi sebelum insert, baris kedua di-skip")
+            continue
+        seen_tickers.add(ticker)
+
         signal  = str(row.get("signal", ""))
         phase   = SIGNAL_TO_PHASE.get(signal, "unknown")
         close   = float(row.get("close",    0) or 0)
         score   = float(row.get("strength", 0) or 0)
         note    = str(row.get("note", ""))
+
+        # >>> STAGE 3: kolom trade setup, None kalau bukan sinyal Mark Up
+        # atau kalau risk_manager membuang sinyal ini (RR di bawah threshold)
+        def _num(col):
+            val = row.get(col)
+            return float(val) if pd.notna(val) else None
 
         rows.append((
             ticker,
@@ -279,6 +291,12 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
             signal, # signal_type (nama asli dari v1)
             min(100, max(0, int(score * 10))),  # normalize 0–10 → 0–100
             phase,
+            _num("range_high"),        # >>> STAGE 3
+            _num("range_low"),         # >>> STAGE 3
+            _num("entry_price"),       # >>> STAGE 3
+            _num("stop_loss"),         # >>> STAGE 3
+            _num("target_price"),      # >>> STAGE 3
+            _num("risk_reward_ratio"), # >>> STAGE 3
         ))
 
     if not rows:
@@ -289,13 +307,21 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
             INSERT INTO screening_results
                 (stock_code, screen_date, close_price, volume_ratio,
                  ff_net_3d, ff_net_5d, ff_net_20d,
-                 signal_type, signal_score, phase)
+                 signal_type, signal_score, phase,
+                 range_high, range_low, entry_price, stop_loss,
+                 target_price, risk_reward_ratio)
             VALUES %s
             ON CONFLICT (stock_code, screen_date) DO UPDATE SET
-                close_price  = EXCLUDED.close_price,
-                signal_type  = EXCLUDED.signal_type,
-                signal_score = EXCLUDED.signal_score,
-                phase        = EXCLUDED.phase
+                close_price       = EXCLUDED.close_price,
+                signal_type       = EXCLUDED.signal_type,
+                signal_score      = EXCLUDED.signal_score,
+                phase             = EXCLUDED.phase,
+                range_high        = EXCLUDED.range_high,
+                range_low         = EXCLUDED.range_low,
+                entry_price       = EXCLUDED.entry_price,
+                stop_loss         = EXCLUDED.stop_loss,
+                target_price      = EXCLUDED.target_price,
+                risk_reward_ratio = EXCLUDED.risk_reward_ratio
         """, rows)
     conn.commit()
     logger.info(f"       Screening results tersimpan: {len(rows)} baris")
@@ -328,7 +354,7 @@ def update_phase_history(conn, df_screening: pd.DataFrame, trade_date: date) -> 
 
             # Cek apakah ada fase aktif (phase_end IS NULL) untuk ticker ini
             cur.execute("""
-                SELECT id, phase, price_at_start
+                SELECT id, phase, phase_start, price_at_start
                 FROM phase_history
                 WHERE stock_code = %s AND phase_end IS NULL
                 ORDER BY phase_start DESC LIMIT 1
@@ -343,15 +369,30 @@ def update_phase_history(conn, df_screening: pd.DataFrame, trade_date: date) -> 
                     VALUES (%s, %s, %s, %s)
                     ON CONFLICT DO NOTHING
                 """, (ticker, phase, trade_date, close))
+                continue
 
-            elif active[1] != phase:
+            active_id, active_phase, active_start, active_price_start = active
+
+            # >>> FIX: rerun untuk trade_date yang SAMA dengan fase aktif saat ini —
+            # jangan tutup-buka fase baru (bikin phase_end < phase_start, kena
+            # constraint chk_phase_dates). Update fase yang sudah ada di tempat.
+            if active_start == trade_date:
+                if active_phase != phase:
+                    cur.execute("""
+                        UPDATE phase_history
+                        SET phase = %s, price_at_start = %s, updated_at = NOW()
+                        WHERE id = %s
+                    """, (phase, close, active_id))
+                    logger.info(f"       {ticker}: rerun {trade_date} — fase diupdate jadi {phase}")
+                continue
+
+            if active_phase != phase:
                 # Fase berubah → tutup fase lama, buka fase baru
-                old_id = active[0]
                 cur.execute("""
                     UPDATE phase_history
                     SET phase_end = %s, price_at_end = %s, updated_at = NOW()
                     WHERE id = %s
-                """, (yesterday, close, old_id))
+                """, (yesterday, close, active_id))
 
                 cur.execute("""
                     INSERT INTO phase_history
@@ -359,7 +400,7 @@ def update_phase_history(conn, df_screening: pd.DataFrame, trade_date: date) -> 
                     VALUES (%s, %s, %s, %s)
                 """, (ticker, phase, trade_date, close))
 
-                logger.info(f"       {ticker}: {active[1]} → {phase}")
+                logger.info(f"       {ticker}: {active_phase} → {phase}")
 
     conn.commit()
     logger.info("       Phase history updated.")
@@ -433,7 +474,7 @@ def run_pipeline(trade_date: date = None, tickers: list[str] = None) -> bool:
         # Step 3 — Foreign flow
         n_ff = save_foreign_flow(conn, tickers, trade_date)
 
-        # Step 4 — Screener
+        # Step 4 — Screener (termasuk Stage 3 risk management)
         df_result = run_screener_and_save(conn, tickers, trade_date)
 
         # Step 5 — Phase history

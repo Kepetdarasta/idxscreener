@@ -45,7 +45,15 @@ def fetch_ohlcv(
         return_1d, change_3d, change_5d,
         vol_avg20, vol_ratio, high_5d
     """
-    if use_cache and cfg.OHLCV_CACHE_PATH.exists():
+    # >>> FIX: OHLCV_CACHE_PATH nunjuk ke satu file tunggal yang tidak pernah
+    # ditulis — cache aslinya disimpan per-ticker (lihat _save_cache/_load_cache).
+    # Cek yang benar: folder cache ada DAN minimal 1 file parquet di dalamnya.
+    cache_available = (
+        cfg.DATA_PROCESSED_DIR.exists()
+        and any(cfg.DATA_PROCESSED_DIR.glob("*.parquet"))
+    )
+
+    if use_cache and cache_available:
         cached  = _load_cache()
         missing = [t for t in tickers if t not in cached]
 

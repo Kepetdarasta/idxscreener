@@ -10,12 +10,13 @@ __pycache__/
 
 # Data — jangan commit data mentah & cache
 data/raw/
-data/processed/
+data/processed/*.parquet
 data/universe/
 
 # Logs
 *.log
 screener.log
+etl.log
 
 # OS
 .DS_Store
