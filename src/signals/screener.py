@@ -42,12 +42,17 @@ def run_all(
     use_cache: bool = True,
     save_output: bool = True,
     foreign_flow: pd.DataFrame = None,   # ← bisa diisi dari luar (upload manual)
+    as_of_date = None,   # >>> FIX: datetime.date — potong data sampai tanggal ini.
+                          # None = pakai data real-time terbaru (mode harian normal).
 ) -> pd.DataFrame:
     from src.data_fetcher.yfinance_fetcher import fetch_ohlcv
     from src.data_fetcher.idx_foreign_parser import load_foreign_flow
 
     tickers = tickers or cfg.DEFAULT_UNIVERSE
-    logger.info(f"Screening {len(tickers)} ticker — 4 sinyal ADMD")
+    logger.info(
+        f"Screening {len(tickers)} ticker — 4 sinyal ADMD"
+        + (f" (as of {as_of_date})" if as_of_date else "")
+    )
 
     # 1. OHLCV
     logger.info("Step 1/3: Download OHLCV...")
@@ -55,6 +60,17 @@ def run_all(
     if not ohlcv:
         logger.error("Tidak ada data OHLCV.")
         return pd.DataFrame()
+
+    # >>> FIX: potong data supaya tidak "bocor" info dari SETELAH as_of_date —
+    # tanpa ini, backfill tanggal lama tetap pakai data hari-ini-real-time,
+    # bukan data "seolah-olah" sampai tanggal itu saja.
+    if as_of_date is not None:
+        cutoff = pd.Timestamp(as_of_date)
+        ohlcv = {t: df[df.index.normalize() <= cutoff] for t, df in ohlcv.items()}
+        ohlcv = {t: df for t, df in ohlcv.items() if not df.empty}
+        if not ohlcv:
+            logger.warning(f"Tidak ada data OHLCV sampai {as_of_date}.")
+            return pd.DataFrame()
 
     # 2. Foreign flow — pakai yang dikirim dari luar, atau coba load dari disk
     if foreign_flow is not None:
