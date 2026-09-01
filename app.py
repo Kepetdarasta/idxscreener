@@ -16,17 +16,15 @@ import pandas as pd
 import psycopg2
 import plotly.express as px
 import streamlit as st
+from sqlalchemy import create_engine, text
 
 # =============================================================================
 # KONEKSI DATABASE
 # =============================================================================
 
 def get_database_url() -> str:
-    # Streamlit Cloud: disimpan di Settings → Secrets
     if "DATABASE_URL" in st.secrets:
         return st.secrets["DATABASE_URL"]
-
-    # Lokal: fallback ke .env
     from dotenv import load_dotenv
     load_dotenv()
     url = os.getenv("DATABASE_URL")
@@ -36,21 +34,47 @@ def get_database_url() -> str:
     return url
 
 
+
 @st.cache_resource
-def get_connection():
-    return psycopg2.connect(get_database_url())
+def get_engine():
+    """
+    Engine SQLAlchemy AMAN untuk di-cache & dipakai bersama banyak sesi,
+    karena SQLAlchemy mengelola connection pool sendiri di baliknya —
+    beda dengan objek psycopg2.connect() mentah yang tidak thread-safe.
+
+    pool_pre_ping=True -> otomatis cek & buang koneksi basi/mati sebelum
+    dipakai (mengatasi Neon yang suka auto-suspend koneksi idle).
+    pool_recycle=280    -> paksa buat koneksi baru sebelum 5 menit
+    (sedikit di bawah threshold suspend Neon), supaya tidak sempat basi.
+    """
+    return create_engine(
+        get_database_url(),
+        pool_pre_ping=True,
+        pool_recycle=280,
+    )
 
 
-@st.cache_data(ttl=300)  # cache 5 menit — cukup untuk data EOD, tidak query berulang tiap interaksi
-def query(sql: str, params: tuple = None) -> pd.DataFrame:
-    conn = get_connection()
-    try:
-        return pd.read_sql(sql, conn, params=params)
-    except Exception:
-        # Koneksi mungkin putus (Neon serverless suka auto-sleep) — reconnect sekali
-        st.cache_resource.clear()
-        conn = get_connection()
-        return pd.read_sql(sql, conn, params=params)
+@st.cache_data(ttl=300)
+def query(sql: str, params: dict = None) -> pd.DataFrame:
+    engine = get_engine()
+    # SQLAlchemy 2.x butuh text() untuk raw SQL string + named params
+    return pd.read_sql(text(sql), engine, params=params or {})
+
+
+#def get_connection():
+#    return psycopg2.connect(get_database_url())
+
+
+#@st.cache_data(ttl=300)  # cache 5 menit — cukup untuk data EOD, tidak query berulang tiap interaksi
+#def query(sql: str, params: tuple = None) -> pd.DataFrame:
+#    conn = get_connection()
+#    try:
+#        return pd.read_sql(sql, conn, params=params)
+#    except Exception:
+#        # Koneksi mungkin putus (Neon serverless suka auto-sleep) — reconnect sekali
+#        st.cache_resource.clear()
+#        conn = get_connection()
+#        return pd.read_sql(sql, conn, params=params)
 
 
 # =============================================================================
