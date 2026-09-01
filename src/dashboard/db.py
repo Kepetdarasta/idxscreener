@@ -1,6 +1,21 @@
 # =============================================================================
 # src/dashboard/db.py — Koneksi & query ke Neon PostgreSQL untuk dashboard
 # Semua fungsi di sini READ-ONLY (SELECT saja), aman dipanggil berulang dari UI.
+#
+# PERUBAHAN dari versi sebelumnya:
+#   - Pakai SQLAlchemy Engine (connection pool) via st.cache_resource, bukan
+#     psycopg2.connect() baru untuk SETIAP query. Engine SQLAlchemy aman
+#     di-cache & dipakai bersama banyak sesi (thread-safe), beda dengan
+#     objek koneksi psycopg2 mentah.
+#   - connect_timeout eksplisit -> kalau Neon lambat "bangun"/tidak
+#     merespons, query akan GAGAL dengan error jelas dalam beberapa detik,
+#     BUKAN menggantung tanpa batas waktu (yang selama ini terlihat
+#     sebagai halaman blank/kosong).
+#   - pool_pre_ping + pool_recycle -> otomatis buang & ganti koneksi yang
+#     basi karena Neon auto-suspend, sebelum dipakai query berikutnya.
+#
+# Nama & signature semua fungsi public (get_latest_screening, get_ohlcv,
+# dst) TIDAK berubah, jadi app.py tidak perlu diedit sama sekali.
 # =============================================================================
 
 import os
@@ -10,30 +25,52 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 import pandas as pd
-import psycopg2
 import streamlit as st
+from sqlalchemy import create_engine, text
 from dotenv import load_dotenv
 
 load_dotenv()
 
 
-def _get_conn():
-    """Buat koneksi baru ke Neon. Dipanggil per query, bukan disimpan lama-lama."""
+def _get_database_url() -> str:
+    # Streamlit Cloud: disimpan di Settings -> Secrets
+    try:
+        if "DATABASE_URL" in st.secrets:
+            return st.secrets["DATABASE_URL"]
+    except Exception:
+        pass  # st.secrets bisa error kalau belum ada secrets.toml sama sekali (lokal)
+
+    # Lokal: fallback ke .env
     url = os.getenv("DATABASE_URL")
     if not url:
         raise EnvironmentError(
             "DATABASE_URL tidak ditemukan. Pastikan file .env ada dan berisi "
-            "DATABASE_URL=postgresql://... (lihat .env.example)."
+            "DATABASE_URL=postgresql://... (lihat .env.example), atau sudah "
+            "diisi di Streamlit Cloud -> Settings -> Secrets."
         )
-    return psycopg2.connect(url)
+    return url
 
 
-def _run_query(sql: str, params: tuple = None) -> pd.DataFrame:
-    conn = _get_conn()
-    try:
-        return pd.read_sql(sql, conn, params=params)
-    finally:
-        conn.close()
+@st.cache_resource(show_spinner=False)
+def _get_engine():
+    """
+    Satu engine SQLAlchemy dipakai bersama semua sesi — ini AMAN (beda
+    dengan psycopg2.connect() mentah) karena SQLAlchemy mengelola
+    connection pool sendiri secara thread-safe di baliknya.
+    """
+    return create_engine(
+        _get_database_url(),
+        pool_pre_ping=True,          # cek & buang koneksi basi sebelum dipakai
+        pool_recycle=280,            # paksa buat koneksi baru sebelum 5 menit
+        pool_size=5,
+        max_overflow=5,
+        connect_args={"connect_timeout": 10},  # gagal cepat, bukan menggantung
+    )
+
+
+def _run_query(sql: str, params: dict = None) -> pd.DataFrame:
+    engine = _get_engine()
+    return pd.read_sql(text(sql), engine, params=params or {})
 
 
 # =============================================================================
@@ -56,8 +93,8 @@ def get_available_dates(limit: int = 60) -> list:
     """Daftar tanggal screening yang tersedia, terbaru dulu."""
     df = _run_query(
         "SELECT DISTINCT screen_date FROM screening_results "
-        "ORDER BY screen_date DESC LIMIT %s",
-        (limit,),
+        "ORDER BY screen_date DESC LIMIT :limit",
+        {"limit": limit},
     )
     return df["screen_date"].tolist()
 
@@ -72,10 +109,10 @@ def get_screening_by_date(screen_date) -> pd.DataFrame:
                sr.signal_type, sr.signal_score, sr.phase
         FROM screening_results sr
         JOIN stocks s ON s.stock_code = sr.stock_code
-        WHERE sr.screen_date = %s
+        WHERE sr.screen_date = :d
         ORDER BY sr.signal_score DESC
     """
-    return _run_query(sql, (screen_date,))
+    return _run_query(sql, {"d": screen_date})
 
 
 # =============================================================================
@@ -99,10 +136,10 @@ def get_phase_history(ticker: str) -> pd.DataFrame:
         SELECT phase, phase_start, phase_end, duration_days,
                price_at_start, price_at_end, price_change_pct, ff_net_cumulative
         FROM phase_history
-        WHERE stock_code = %s
+        WHERE stock_code = :t
         ORDER BY phase_start ASC
     """
-    return _run_query(sql, (ticker,))
+    return _run_query(sql, {"t": ticker})
 
 
 # =============================================================================
@@ -119,11 +156,11 @@ def get_ohlcv(ticker: str, days: int = 90) -> pd.DataFrame:
     sql = """
         SELECT trade_date, open_price, high_price, low_price, close_price, volume
         FROM daily_ohlcv
-        WHERE stock_code = %s
+        WHERE stock_code = :t
         ORDER BY trade_date DESC
-        LIMIT %s
+        LIMIT :days
     """
-    df = _run_query(sql, (ticker, days))
+    df = _run_query(sql, {"t": ticker, "days": days})
     if df.empty:
         return df
 
@@ -136,7 +173,6 @@ def get_ohlcv(ticker: str, days: int = 90) -> pd.DataFrame:
         "close_price": "Close",
         "volume": "Volume",
     })
-    # Vol MA20 opsional — dipakai render_ohlcv_chart kalau ada
     df["vol_avg20"] = df["Volume"].rolling(20, min_periods=1).mean()
     return df
 
@@ -155,11 +191,11 @@ def get_foreign_flow(ticker: str, days: int = 30) -> pd.DataFrame:
     sql = """
         SELECT stock_code, trade_date, foreign_net_value
         FROM foreign_flow
-        WHERE stock_code = %s
+        WHERE stock_code = :t
         ORDER BY trade_date DESC
-        LIMIT %s
+        LIMIT :days
     """
-    df = _run_query(sql, (ticker, days))
+    df = _run_query(sql, {"t": ticker, "days": days})
     if df.empty:
         return df
 
