@@ -131,7 +131,9 @@ for i, (sig, emoji) in enumerate(SIGNAL_EMOJI.items()):
 
 st.markdown("---")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📋 Screening Terbaru", "⏳ Fase Aktif", "🔍 Detail Saham", "📂 Export"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(
+    ["📋 Screening Terbaru", "⏳ Fase Aktif", "🔍 Detail Saham", "📂 Export", "ℹ️ Keterangan"]
+)
 
 # =============================================================================
 # TAB 1 — SCREENING TERBARU
@@ -286,4 +288,106 @@ with tab4:
         file_name=f"idx_screener_{latest_date}.csv",
         mime="text/csv",
         use_container_width=True,
+    )
+
+# =============================================================================
+# TAB 5 — EXPLAINER / KETERANGAN
+# =============================================================================
+
+def _rp_miliar(nominal: int) -> str:
+    """Format angka rupiah besar jadi 'Rp XXX miliar' biar gampang dibaca."""
+    return f"Rp {nominal / 1_000_000_000:,.0f} miliar".replace(",", ".")
+
+
+with tab5:
+    st.subheader("Apa itu Siklus ADMD?")
+    st.markdown(
+        """
+Setiap saham secara umum bergerak melalui 4 fase berulang, mengikuti prinsip
+**Wyckoff Method** — teori yang menjelaskan bagaimana pemodal besar ("smart money")
+mengumpulkan lalu melepas posisi mereka secara bertahap, tanpa membuat harga
+bergerak drastis di awal.
+
+Screener ini mendeteksi 4 fase tersebut secara otomatis setiap hari berdasarkan
+kombinasi **pergerakan harga**, **volume**, dan **arus transaksi asing (foreign flow)**.
+"""
+    )
+
+    st.markdown("---")
+
+    # ---------------------------------------------------------------
+    # AKUMULASI
+    # ---------------------------------------------------------------
+    with st.expander("🟢 Akumulasi (Accumulation)", expanded=True):
+        st.markdown(
+            f"""
+**Apa itu:** Fase di mana pemodal besar diam-diam mulai mengoleksi saham dalam
+jumlah besar, biasanya setelah harga sudah lama turun atau bergerak sideways.
+Harga sengaja dijaga agar tidak naik terlalu cepat, supaya tidak menarik
+perhatian ritel dan harga beli tetap murah.
+
+**Kriteria yang dipakai sistem:**
+- Net **beli** asing minimal **{_rp_miliar(cfg.ACCUM_NET_BUY_MIN)}** dalam **{cfg.ACCUM_WINDOW_DAYS} hari** terakhir
+- Perubahan harga selama periode tersebut antara **{cfg.ACCUM_PRICE_CHANGE_MIN:.0%}** sampai **+{cfg.ACCUM_PRICE_CHANGE_MAX:.0%}** (harga stagnan/naik pelan, bukan sudah naik tajam)
+
+*Catatan: kalau data foreign flow tidak tersedia hari itu, sinyal Akumulasi tetap bisa muncul dari kriteria harga+volume saja, tapi skor kekuatannya dibatasi maksimal 70.*
+"""
+        )
+
+    # ---------------------------------------------------------------
+    # MARK UP
+    # ---------------------------------------------------------------
+    with st.expander("🔵 Mark Up"):
+        st.markdown(
+            f"""
+**Apa itu:** Fase kenaikan harga yang sebenarnya — setelah proses akumulasi
+selesai, harga mulai bergerak naik dengan cepat dan diikuti oleh minat beli
+yang meluas (bukan cuma pemodal besar lagi).
+
+**Kriteria yang dipakai sistem:**
+- Volume transaksi minimal **{cfg.MARKUP_VOLUME_RATIO_MIN}x** rata-rata volume **{cfg.MARKUP_VOLUME_AVG_WINDOW} hari** terakhir
+- Harga naik minimal **{cfg.MARKUP_PRICE_BREAKOUT:.0%}** dalam 1 hari, **atau** berhasil menembus (breakout) level tertinggi **{cfg.MARKUP_BREAKOUT_WINDOW} hari** terakhir
+"""
+        )
+
+    # ---------------------------------------------------------------
+    # DISTRIBUSI
+    # ---------------------------------------------------------------
+    with st.expander("🟠 Distribusi (Distribution)"):
+        st.markdown(
+            f"""
+**Apa itu:** Kebalikan dari akumulasi — pemodal besar mulai melepas
+(menjual) posisi mereka secara bertahap, biasanya setelah harga sudah naik
+signifikan. Harga terlihat masih stabil atau bahkan sedikit naik karena
+pembeli ritel yang justru dominan membeli, padahal pemain besar sedang keluar.
+
+**Kriteria yang dipakai sistem:**
+- Net **jual** asing minimal **{_rp_miliar(abs(cfg.DIST_NET_SELL_MIN))}** dalam **{cfg.DIST_WINDOW_DAYS} hari** terakhir
+- Perubahan harga selama periode tersebut antara **{cfg.DIST_PRICE_CHANGE_MIN:.0%}** sampai **+{cfg.DIST_PRICE_CHANGE_MAX:.0%}** (harga stagnan atau mulai turun, belum jatuh tajam)
+
+*Catatan: sama seperti Akumulasi, tanpa data foreign flow skor kekuatan dibatasi maksimal 70.*
+"""
+        )
+
+    # ---------------------------------------------------------------
+    # MARK DOWN
+    # ---------------------------------------------------------------
+    with st.expander("🔴 Mark Down"):
+        st.markdown(
+            f"""
+**Apa itu:** Fase penurunan harga yang tajam — kebalikan dari Mark Up.
+Terjadi setelah distribusi selesai, saat pemodal besar sudah keluar dan
+tekanan jual mendominasi pasar.
+
+**Kriteria yang dipakai sistem:**
+- Harga turun minimal **{cfg.MARKDOWN_PRICE_DROP_MIN:.0%}** dalam **{cfg.MARKDOWN_PRICE_WINDOW} hari** terakhir
+- Net jual asing minimal **{_rp_miliar(abs(cfg.MARKDOWN_NET_SELL_MIN))}** (konfirmasi tekanan jual masih berlanjut)
+- Volume di atas **{cfg.MARKDOWN_VOLUME_RATIO_MIN}x** rata-rata (konfirmasi partisipasi pasar, bukan penurunan sepi volume)
+"""
+        )
+
+    st.markdown("---")
+    st.caption(
+        "Semua threshold di atas diambil langsung dari config.py dan bisa disesuaikan "
+        "di sana kapan saja — halaman ini akan otomatis mengikuti."
     )
