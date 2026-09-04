@@ -380,8 +380,71 @@ with tab_keterangan:
 """)
 
     st.divider()
+    st.subheader("Strategi per fase")
+    st.info(
+        "ℹ️ Ini kerangka umum berdasarkan metode **Wyckoff** (bukan saran keuangan "
+        "personal, bukan jaminan hasil). Sinyal dari screener ini murni membaca "
+        "pola harga & foreign flow historis — tidak memperhitungkan kondisi "
+        "fundamental, berita, atau profil risiko masing-masing orang. Selalu "
+        "riset mandiri (DYOR) dan pertimbangkan konsultasi dengan penasihat "
+        "keuangan berlisensi sebelum mengambil keputusan.",
+        icon="ℹ️",
+    )
+
+    s1, s2 = st.columns(2)
+    with s1:
+        with st.container(border=True):
+            st.markdown(phase_badge("accumulation") + " **Akumulasi**", unsafe_allow_html=True)
+            st.markdown("""
+**Konteks:** dugaan institusi/asing mulai mengumpulkan barang, harga cenderung sideways/naik pelan.
+
+- Mulai **cicil beli bertahap (DCA)**, hindari all-in — fase ini masih rawan gagal
+  jadi reversal beneran ("false accumulation")
+- Tunggu `signal_score` cukup tinggi & `ff_net_3d`/`ff_net_5d` konsisten positif
+  beberapa hari berturut, bukan cuma 1 hari
+- Fase yang baru mulai (`duration_days` kecil, 0–2 hari) → masih rawan noise, lebih aman tunggu konfirmasi dulu
+""")
+
+        with st.container(border=True):
+            st.markdown(phase_badge("markup") + " **Mark Up**", unsafe_allow_html=True)
+            st.markdown("""
+**Konteks:** breakout terkonfirmasi, momentum naik sudah jalan.
+
+- Ini fase paling umum buat **menambah posisi (add) atau hold** kalau sudah
+  cicil beli di fase akumulasi
+- Entry baru di fase ini risikonya lebih tinggi (sudah naik duluan) —
+  pertimbangkan posisi lebih kecil / tunggu pullback
+- Pasang trailing stop, karena mark up bisa berbalik cepat jadi distribusi
+""")
+
+    with s2:
+        with st.container(border=True):
+            st.markdown(phase_badge("distribution") + " **Distribusi**", unsafe_allow_html=True)
+            st.markdown("""
+**Konteks:** dugaan institusi/asing mulai lepas barang ke ritel, harga stagnan/mulai lemah.
+
+- Pertimbangkan **kurangi porsi bertahap (scale out / take profit sebagian)**,
+  bukan tunggu sampai konfirmasi markdown penuh
+- Hindari nambah posisi baru di fase ini
+- Perhatikan `ff_net_cumulative` — makin negatif & makin lama fase ini
+  berlangsung, makin kuat sinyal keluarnya asing
+""")
+
+        with st.container(border=True):
+            st.markdown(phase_badge("markdown") + " **Mark Down**", unsafe_allow_html=True)
+            st.markdown("""
+**Konteks:** downtrend terkonfirmasi, tekanan jual dominan.
+
+- **Hindari entry baru** di fase ini
+- Kalau masih pegang posisi, ini biasanya sudah terlambat untuk cut loss "murah" —
+  pertimbangkan sesuai rencana risk management masing-masing
+- Fase ini sering pendek (lihat rata-rata `duration_days` di tab Timeline) —
+  pantau terus, biasanya diikuti akumulasi baru yang jadi titik re-entry berikutnya
+""")
+
+    st.divider()
     st.caption(
-        "Universe default: **" + ("LQ45" if cfg.DEFAULT_UNIVERSE == cfg.LQ45 else "custom")
-        + f"** ({len(cfg.DEFAULT_UNIVERSE)} saham) · "
+        "Universe default: " + ("LQ45" if cfg.DEFAULT_UNIVERSE == cfg.LQ45 else "custom")
+        + f" ({len(cfg.DEFAULT_UNIVERSE)} saham) · "
         f"Scheduler ETL: setiap hari bursa jam {cfg.SCHEDULER_HOUR_WIB}:00 WIB"
     )
