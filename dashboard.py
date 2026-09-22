@@ -20,12 +20,23 @@ import pandas as pd
 import psycopg2
 import streamlit as st
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
 
 import config as cfg
+from src.analysis.trend_indicators import (
+    compute_indicators,
+    find_crossovers,
+    validate_leading_indicator,
+    EVENT_MA_GOLDEN,
+    EVENT_MA_DEATH,
+    EVENT_MACD_BULL,
+    EVENT_MACD_BEAR,
+)
 
 # =============================================================================
 # SETUP
@@ -49,6 +60,26 @@ PHASE_COLOR = {
     "markdown": cfg.SIGNAL_COLORS["Mark Down"],
     "unknown": "#6b7280",
 }
+
+# Sinyal trend (MA cross & MACD cross) — kolom TERPISAH dari fase ADMD,
+# jadi satu ticker bisa punya fase ADMD + sinyal trend sekaligus tanpa
+# saling menggusur (lihat screener.py: run_all()).
+TREND_LABEL = {
+    "MA_Golden_Cross"   : "Golden Cross (MA5×MA20)",
+    "MA_Death_Cross"    : "Death Cross (MA5×MA20)",
+    "MACD_Bullish_Cross": "MACD Bullish",
+    "MACD_Bearish_Cross": "MACD Bearish",
+}
+TREND_COLOR = {
+    "MA_Golden_Cross"   : "#22c55e",
+    "MA_Death_Cross"    : "#ef4444",
+    "MACD_Bullish_Cross": "#3b82f6",
+    "MACD_Bearish_Cross": "#f97316",
+}
+
+# Minimal jumlah hari histori supaya MACD (EMA26 + signal EMA9) cukup "matang"
+# sebelum dianggap layak ditampilkan di chart perbandingan.
+MA_SLOW_WINDOW_MIN = 35
 
 
 def get_conn():
@@ -92,9 +123,57 @@ def load_phase_history() -> pd.DataFrame:
     return df
 
 
+@st.cache_data(ttl=cfg.DASHBOARD_REFRESH_SEC, show_spinner="Memuat histori harga...")
+def load_ohlcv_history(stock_code: str) -> pd.Series:
+    """Histori close price satu saham, index = tanggal. Untuk hitung MA/MACD penuh."""
+    conn = get_conn()
+    try:
+        df = pd.read_sql(
+            "SELECT trade_date, close_price FROM daily_ohlcv "
+            "WHERE stock_code = %s ORDER BY trade_date",
+            conn, params=(stock_code,),
+        )
+    finally:
+        conn.close()
+    if df.empty:
+        return pd.Series(dtype=float)
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    return df.set_index("trade_date")["close_price"]
+
+
+@st.cache_data(ttl=cfg.DASHBOARD_REFRESH_SEC, show_spinner="Memuat histori harga semua saham...")
+def load_ohlcv_all(tickers: tuple) -> dict:
+    """Sama seperti load_ohlcv_history tapi untuk banyak ticker sekaligus (satu query)."""
+    conn = get_conn()
+    try:
+        df = pd.read_sql(
+            "SELECT stock_code, trade_date, close_price FROM daily_ohlcv "
+            "WHERE stock_code = ANY(%s) ORDER BY stock_code, trade_date",
+            conn, params=(list(tickers),),
+        )
+    finally:
+        conn.close()
+    if df.empty:
+        return {}
+    df["trade_date"] = pd.to_datetime(df["trade_date"])
+    return {
+        t: g.set_index("trade_date")["close_price"]
+        for t, g in df.groupby("stock_code")
+    }
+
+
 def phase_badge(phase: str) -> str:
     label = PHASE_LABEL.get(phase, phase)
     color = PHASE_COLOR.get(phase, "#6b7280")
+    return f"<span style='background:{color}22;color:{color};padding:2px 10px;" \
+           f"border-radius:10px;font-size:12.5px;font-weight:600'>{label}</span>"
+
+
+def trend_badge(signal) -> str:
+    if signal is None or (isinstance(signal, float) and pd.isna(signal)):
+        return "<span style='color:#9ca3af;font-size:12.5px'>—</span>"
+    label = TREND_LABEL.get(signal, signal)
+    color = TREND_COLOR.get(signal, "#6b7280")
     return f"<span style='background:{color}22;color:{color};padding:2px 10px;" \
            f"border-radius:10px;font-size:12.5px;font-weight:600'>{label}</span>"
 
@@ -123,8 +202,8 @@ st.title(f"📊 {cfg.DASHBOARD_TITLE}")
 st.caption("Data ter-refresh otomatis tiap "
            f"{cfg.DASHBOARD_REFRESH_SEC // 60} menit dari Neon PostgreSQL.")
 
-tab_screening, tab_timeline, tab_keterangan = st.tabs(
-    ["🔍 Screening", "📈 Timeline Fase", "📋 Keterangan"]
+tab_screening, tab_trend, tab_compare, tab_timeline, tab_keterangan = st.tabs(
+    ["🔍 Screening", "📊 Trend MA/MACD", "🔬 Perbandingan Metode", "📈 Timeline Fase", "📋 Keterangan"]
 )
 
 # =============================================================================
@@ -154,10 +233,19 @@ with tab_screening:
         with col3:
             min_score = st.slider("Skor minimum", 0, 100, 0)
 
+        only_trend = st.checkbox(
+            "Hanya tampilkan yang ada sinyal trend (MA/MACD cross) hari ini",
+            value=False,
+        )
+
         filtered = df_screen[df_screen["phase"].isin(selected_phases)]
         if selected_sectors:
             filtered = filtered[filtered["sector"].isin(selected_sectors)]
         filtered = filtered[filtered["signal_score"].fillna(0) >= min_score]
+        if only_trend and "ma_cross_signal" in filtered.columns and "macd_cross_signal" in filtered.columns:
+            filtered = filtered[
+                filtered["ma_cross_signal"].notna() | filtered["macd_cross_signal"].notna()
+            ]
 
         # Ringkasan jumlah saham per fase (dari data yang SUDAH difilter sektor,
         # supaya tetap relevan meski checkbox fase belum semua dicentang)
@@ -171,17 +259,39 @@ with tab_screening:
             with metric_cols[i]:
                 st.metric(PHASE_LABEL[phase], int(count_by_phase.get(phase, 0)))
 
+        # Ringkasan sinyal trend hari ini (independen dari filter fase di atas)
+        if "ma_cross_signal" in counts.columns and "macd_cross_signal" in counts.columns:
+            trend_counts = pd.concat(
+                [counts["ma_cross_signal"], counts["macd_cross_signal"]]
+            ).dropna().value_counts()
+            if not trend_counts.empty:
+                st.caption(
+                    "Sinyal trend hari ini: "
+                    + " · ".join(
+                        f"{TREND_LABEL.get(sig, sig)}: **{n}**"
+                        for sig, n in trend_counts.items()
+                    )
+                )
+
         st.divider()
         st.caption(f"{len(filtered)} saham cocok filter")
 
         display_cols = [
             "stock_code", "stock_name", "sector", "close_price",
             "phase", "signal_type", "signal_score", "volume_ratio",
-            "ff_net_today",
+            "ff_net_today", "ma_cross_signal", "macd_cross_signal",
         ]
         display_cols = [c for c in display_cols if c in filtered.columns]
         show_df = filtered[display_cols].sort_values("signal_score", ascending=False).copy()
         show_df["phase"] = show_df["phase"].map(lambda p: PHASE_LABEL.get(p, p))
+        if "ma_cross_signal" in show_df.columns:
+            show_df["ma_cross_signal"] = show_df["ma_cross_signal"].map(
+                lambda s: TREND_LABEL.get(s, s) if pd.notna(s) else "—"
+            )
+        if "macd_cross_signal" in show_df.columns:
+            show_df["macd_cross_signal"] = show_df["macd_cross_signal"].map(
+                lambda s: TREND_LABEL.get(s, s) if pd.notna(s) else "—"
+            )
 
         st.dataframe(
             show_df,
@@ -194,8 +304,285 @@ with tab_screening:
                 ),
                 "volume_ratio": st.column_config.NumberColumn("Vol Ratio", format="%.2fx"),
                 "ff_net_today": st.column_config.NumberColumn("FF Net (lot)", format="%d"),
+                "ma_cross_signal": st.column_config.TextColumn("MA Cross"),
+                "macd_cross_signal": st.column_config.TextColumn("MACD Cross"),
             },
         )
+
+# =============================================================================
+# TAB — TREND MA/MACD (golden/death cross & MACD bullish/bearish)
+# =============================================================================
+
+with tab_trend:
+    df_screen_trend = load_screening_latest()
+
+    if df_screen_trend.empty:
+        st.info("Belum ada data screening. Pastikan ETL pipeline sudah pernah jalan.")
+    elif "ma_cross_signal" not in df_screen_trend.columns or "macd_cross_signal" not in df_screen_trend.columns:
+        st.warning(
+            "Kolom `ma_cross_signal` / `macd_cross_signal` belum ada di "
+            "`v_screening_latest`. Pastikan view sudah di-update (lihat "
+            "migration `ALTER TABLE screening_results ...` dan "
+            "`CREATE OR REPLACE VIEW v_screening_latest ...`)."
+        )
+    else:
+        latest_date = df_screen_trend["screen_date"].iloc[0]
+        st.subheader(f"Sinyal trend — {latest_date}")
+        st.caption(
+            "Sinyal ini independen dari fase ADMD — satu saham bisa berada di "
+            "fase Akumulasi tapi sudah menunjukkan MACD mulai bearish, misalnya. "
+            "Keduanya ditampilkan apa adanya, tidak saling menggantikan."
+        )
+
+        trend_hits = df_screen_trend[
+            df_screen_trend["ma_cross_signal"].notna()
+            | df_screen_trend["macd_cross_signal"].notna()
+        ].copy()
+
+        if trend_hits.empty:
+            st.info("Tidak ada sinyal MA cross atau MACD cross hari ini.")
+        else:
+            col_ma, col_macd = st.columns(2)
+
+            with col_ma:
+                st.markdown("#### MA Cross (MA5 × MA20)")
+                ma_hits = trend_hits[trend_hits["ma_cross_signal"].notna()]
+                if ma_hits.empty:
+                    st.caption("Tidak ada.")
+                for _, r in ma_hits.sort_values("ma_cross_signal").iterrows():
+                    with st.container(border=True):
+                        c1, c2 = st.columns([3, 2])
+                        c1.markdown(
+                            f"**{r['stock_code']}** — {r['stock_name']}<br>"
+                            + trend_badge(r["ma_cross_signal"]),
+                            unsafe_allow_html=True,
+                        )
+                        c2.markdown(
+                            f"Rp{r['close_price']:,.0f}<br>"
+                            f"Fase: {PHASE_LABEL.get(r['phase'], r['phase'])}",
+                            unsafe_allow_html=True,
+                        )
+
+            with col_macd:
+                st.markdown("#### MACD Cross")
+                macd_hits = trend_hits[trend_hits["macd_cross_signal"].notna()]
+                if macd_hits.empty:
+                    st.caption("Tidak ada.")
+                for _, r in macd_hits.sort_values("macd_cross_signal").iterrows():
+                    with st.container(border=True):
+                        c1, c2 = st.columns([3, 2])
+                        c1.markdown(
+                            f"**{r['stock_code']}** — {r['stock_name']}<br>"
+                            + trend_badge(r["macd_cross_signal"]),
+                            unsafe_allow_html=True,
+                        )
+                        c2.markdown(
+                            f"Rp{r['close_price']:,.0f}<br>"
+                            f"Fase: {PHASE_LABEL.get(r['phase'], r['phase'])}",
+                            unsafe_allow_html=True,
+                        )
+
+            st.divider()
+            st.caption("Ticker dengan sinyal ADMD + trend bersamaan (konfirmasi silang):")
+            overlap = trend_hits[trend_hits["signal_type"].notna()]
+            if overlap.empty:
+                st.caption("Tidak ada saat ini.")
+            else:
+                overlap_cols = [
+                    "stock_code", "stock_name", "phase", "signal_type",
+                    "ma_cross_signal", "macd_cross_signal",
+                ]
+                overlap_show = overlap[overlap_cols].copy()
+                overlap_show["phase"] = overlap_show["phase"].map(lambda p: PHASE_LABEL.get(p, p))
+                overlap_show["ma_cross_signal"] = overlap_show["ma_cross_signal"].map(
+                    lambda s: TREND_LABEL.get(s, s) if pd.notna(s) else "—"
+                )
+                overlap_show["macd_cross_signal"] = overlap_show["macd_cross_signal"].map(
+                    lambda s: TREND_LABEL.get(s, s) if pd.notna(s) else "—"
+                )
+                st.dataframe(overlap_show, use_container_width=True, hide_index=True)
+
+# =============================================================================
+# TAB — PERBANDINGAN METODE (Wyckoff vs MA/MACD cross, independen)
+# =============================================================================
+
+with tab_compare:
+    st.caption(
+        "Membandingkan fase Wyckoff (ADMD) yang sudah berjalan dengan metode "
+        "teknikal yang independen: MA5×MA20 cross dan MACD cross. Tujuannya "
+        "melihat apakah golden cross / MACD bullish cenderung muncul **sebelum** "
+        "fase akumulasi/mark up tercatat oleh metode Wyckoff — atau sebaliknya "
+        "untuk distribusi/markdown."
+    )
+
+    compare_mode = st.radio(
+        "Mode", ["📈 Chart per saham", "📋 Validasi leading indicator"],
+        horizontal=True, key="compare_mode",
+    )
+
+    # -------------------------------------------------------------------
+    # MODE 1 — Chart per saham: harga + MA/MACD + shading fase Wyckoff
+    # -------------------------------------------------------------------
+    if compare_mode == "📈 Chart per saham":
+        tickers_all = sorted(cfg.DEFAULT_UNIVERSE)
+        sel_ticker = st.selectbox("Pilih saham", tickers_all, key="cmp_ticker")
+
+        close_hist = load_ohlcv_history(sel_ticker)
+
+        if close_hist.empty or len(close_hist) < MA_SLOW_WINDOW_MIN:
+            st.warning(
+                f"Histori harga {sel_ticker} belum cukup panjang untuk hitung "
+                f"MA20/MACD (butuh minimal ~35 hari data)."
+            )
+        else:
+            ind = compute_indicators(close_hist)
+            events = find_crossovers(ind)
+
+            df_hist_all = load_phase_history()
+            phases_sel = df_hist_all[df_hist_all["stock_code"] == sel_ticker].sort_values("phase_start")
+
+            fig = make_subplots(
+                rows=2, cols=1, shared_xaxes=True, row_heights=[0.65, 0.35],
+                vertical_spacing=0.04,
+                subplot_titles=(
+                    f"{sel_ticker} — Harga + MA5/MA20 (latar = fase Wyckoff)",
+                    "MACD (12, 26, 9)",
+                ),
+            )
+
+            # Shading fase Wyckoff sebagai latar belakang chart harga
+            for _, r in phases_sel.iterrows():
+                end = r["phase_end"] if pd.notna(r["phase_end"]) else ind.index.max()
+                fig.add_vrect(
+                    x0=r["phase_start"], x1=end,
+                    fillcolor=PHASE_COLOR.get(r["phase"], "#6b7280"),
+                    opacity=0.12, line_width=0, row=1, col=1,
+                )
+
+            fig.add_trace(go.Scatter(
+                x=ind.index, y=ind["close"], name="Close",
+                line=dict(color="#111827", width=1.3),
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=ind.index, y=ind["ma_fast"], name="MA5",
+                line=dict(color="#3b82f6", width=1),
+            ), row=1, col=1)
+            fig.add_trace(go.Scatter(
+                x=ind.index, y=ind["ma_slow"], name="MA20",
+                line=dict(color="#f97316", width=1),
+            ), row=1, col=1)
+
+            golden_ev = events[events["type"] == EVENT_MA_GOLDEN]
+            death_ev  = events[events["type"] == EVENT_MA_DEATH]
+            if not golden_ev.empty:
+                fig.add_trace(go.Scatter(
+                    x=golden_ev["date"], y=ind.loc[golden_ev["date"], "ma_fast"],
+                    mode="markers", name="Golden Cross",
+                    marker=dict(symbol="star", size=12, color="#22c55e",
+                                line=dict(width=1, color="#14532d")),
+                ), row=1, col=1)
+            if not death_ev.empty:
+                fig.add_trace(go.Scatter(
+                    x=death_ev["date"], y=ind.loc[death_ev["date"], "ma_fast"],
+                    mode="markers", name="Death Cross",
+                    marker=dict(symbol="star", size=12, color="#ef4444",
+                                line=dict(width=1, color="#7f1d1d")),
+                ), row=1, col=1)
+
+            fig.add_trace(go.Bar(
+                x=ind.index, y=ind["histogram"], name="Histogram",
+                marker_color=["#22c55e" if v >= 0 else "#ef4444" for v in ind["histogram"].fillna(0)],
+            ), row=2, col=1)
+            fig.add_trace(go.Scatter(
+                x=ind.index, y=ind["macd_line"], name="MACD line",
+                line=dict(color="#3b82f6", width=1),
+            ), row=2, col=1)
+            fig.add_trace(go.Scatter(
+                x=ind.index, y=ind["signal_line"], name="Signal line",
+                line=dict(color="#f97316", width=1),
+            ), row=2, col=1)
+
+            fig.update_layout(
+                height=680,
+                legend=dict(orientation="h", y=1.06),
+                margin=dict(t=70, b=20),
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+            bullish_n = (events["type"] == EVENT_MACD_BULL).sum()
+            bearish_n = (events["type"] == EVENT_MACD_BEAR).sum()
+            st.caption(
+                f"Sepanjang histori tersedia: {len(golden_ev)} golden cross · "
+                f"{len(death_ev)} death cross · {bullish_n} MACD bullish · "
+                f"{bearish_n} MACD bearish."
+            )
+
+    # -------------------------------------------------------------------
+    # MODE 2 — Validasi leading indicator (semua saham, semua transisi fase)
+    # -------------------------------------------------------------------
+    else:
+        lookback_days = st.slider(
+            "Jendela pengecekan 'sebelum transisi' (hari)", 1, 20, 5, key="cmp_lookback"
+        )
+        tickers_all = tuple(sorted(cfg.DEFAULT_UNIVERSE))
+
+        with st.spinner("Menghitung indikator untuk semua saham..."):
+            ohlcv_by_ticker = load_ohlcv_all(tickers_all)
+            df_hist_all = load_phase_history()
+            result = validate_leading_indicator(df_hist_all, ohlcv_by_ticker, lookback_days)
+
+        if result.empty:
+            st.info("Belum cukup data phase_history / OHLCV untuk validasi.")
+        else:
+            summary = (
+                result.groupby("phase")["leading_signal_found"]
+                .agg(["sum", "count"])
+                .rename(columns={"sum": "didahului_sinyal", "count": "total_transisi"})
+            )
+            summary["persentase"] = (
+                summary["didahului_sinyal"] / summary["total_transisi"] * 100
+            ).round(1)
+
+            st.subheader(f"Ringkasan — sinyal trend dalam {lookback_days} hari sebelum transisi fase")
+            metric_cols = st.columns(4)
+            for i, phase in enumerate(["accumulation", "markup", "distribution", "markdown"]):
+                with metric_cols[i]:
+                    if phase in summary.index:
+                        row = summary.loc[phase]
+                        st.metric(
+                            PHASE_LABEL[phase],
+                            f"{row['persentase']:.0f}%",
+                            help=(
+                                f"{int(row['didahului_sinyal'])} dari "
+                                f"{int(row['total_transisi'])} transisi fase "
+                                f"{PHASE_LABEL[phase]} didahului golden/death cross "
+                                f"atau MACD cross yang relevan."
+                            ),
+                        )
+                    else:
+                        st.metric(PHASE_LABEL[phase], "—")
+
+            st.divider()
+            st.caption("Rincian tiap transisi fase:")
+            show = result.copy()
+            show["phase"] = show["phase"].map(lambda p: PHASE_LABEL.get(p, p))
+            show["phase_start"] = pd.to_datetime(show["phase_start"]).dt.strftime("%d %b %Y")
+            show["leading_signal_found"] = show["leading_signal_found"].map({True: "✅ Ya", False: "❌ Tidak"})
+            show["signal_type"] = show["signal_type"].map(
+                lambda s: TREND_LABEL.get(s, s) if pd.notna(s) else "—"
+            )
+            st.dataframe(
+                show[["stock_code", "phase", "phase_start", "leading_signal_found", "signal_type", "days_before"]],
+                use_container_width=True, hide_index=True,
+                column_config={
+                    "stock_code": "Saham",
+                    "phase": "Fase baru",
+                    "phase_start": "Mulai",
+                    "leading_signal_found": "Didahului sinyal?",
+                    "signal_type": "Jenis sinyal",
+                    "days_before": st.column_config.NumberColumn("Berapa hari sebelumnya"),
+                },
+            )
 
 # =============================================================================
 # TAB 2 — TIMELINE FASE

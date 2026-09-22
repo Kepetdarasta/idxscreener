@@ -272,13 +272,14 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
             ticker,
             trade_date,
             close,
-            None,   # volume_ratio — belum ada di v1, akan diisi nanti
-            None,   # ff_net_3d
-            None,   # ff_net_5d
-            None,   # ff_net_20d
-            signal, # signal_type (nama asli dari v1)
-            min(100, max(0, int(score * 10))),  # normalize 0–10 → 0–100
+            None, None, None, None,
+            signal, 
+            min(100, max(0, int(score * 10))),
             phase,
+            row.get("ma_cross_signal") or None,
+            row.get("ma_cross_note") or None,
+            row.get("macd_cross_signal") or None,
+            row.get("macd_cross_note") or None,
         ))
 
     if not rows:
@@ -289,18 +290,22 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
             INSERT INTO screening_results
                 (stock_code, screen_date, close_price, volume_ratio,
                  ff_net_3d, ff_net_5d, ff_net_20d,
-                 signal_type, signal_score, phase)
+                 signal_type, signal_score, phase,
+                 ma_cross_signal, ma_cross_note, macd_cross_signal, macd_cross_note)
             VALUES %s
             ON CONFLICT (stock_code, screen_date) DO UPDATE SET
-                close_price  = EXCLUDED.close_price,
-                signal_type  = EXCLUDED.signal_type,
-                signal_score = EXCLUDED.signal_score,
-                phase        = EXCLUDED.phase
+                close_price       = EXCLUDED.close_price,
+                signal_type       = EXCLUDED.signal_type,
+                signal_score      = EXCLUDED.signal_score,
+                phase             = EXCLUDED.phase,
+                ma_cross_signal   = EXCLUDED.ma_cross_signal,
+                ma_cross_note     = EXCLUDED.ma_cross_note,
+                macd_cross_signal = EXCLUDED.macd_cross_signal,
+                macd_cross_note   = EXCLUDED.macd_cross_note
         """, rows)
     conn.commit()
     logger.info(f"       Screening results tersimpan: {len(rows)} baris")
     return df
-
 
 # =============================================================================
 # STEP 5 — DETEKSI & UPDATE FASE

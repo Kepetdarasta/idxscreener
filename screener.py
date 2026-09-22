@@ -20,15 +20,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import config as cfg
 from src.signals import accumulation, distribution, markup, markdown
 from src.signals import risk_manager   # >>> STAGE 3
+from src.signals import accumulation, distribution, markup, markdown, ma_cross, macd_cross
 
 logger = logging.getLogger(__name__)
 
 SIGNAL_FUNCS = {
-    "Akumulasi" : accumulation.detect,
-    "Distribusi": distribution.detect,
-    "Mark Up"   : markup.detect,
-    "Mark Down" : markdown.detect,
+    "Akumulasi"          : accumulation.detect,
+    "Distribusi"         : distribution.detect,
+    "Mark Up"            : markup.detect,
+    "Mark Down"          : markdown.detect,
+    "MA_Golden_Cross"    : ma_cross.detect,     # detect() return campuran golden+death,
+    "MACD_Bullish_Cross" : macd_cross.detect,   # tapi didaftarkan sekali saja per modul
 }
+
 SIGNAL_EMOJI = {
     "Akumulasi" : "🟢",
     "Distribusi": "🟠",

@@ -20,6 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import config as cfg
 from src.signals import accumulation, distribution, markup, markdown
 from src.signals import risk_manager   # >>> STAGE 3
+from src.signals import ma_cross, macd_cross
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +29,18 @@ SIGNAL_FUNCS = {
     "Distribusi": distribution.detect,
     "Mark Up"   : markup.detect,
     "Mark Down" : markdown.detect,
+    "MA_Cross": ma_cross.detect,
+    "MACD_Cross": macd_cross.detect,
 }
+
 SIGNAL_EMOJI = {
     "Akumulasi" : "🟢",
     "Distribusi": "🟠",
     "Mark Up"   : "🔵",
     "Mark Down" : "🔴",
+    "MA_Cross"  : "📊",
+    "MACD_Cross": "📈",
 }
-
 
 def run_all(
     tickers: List[str] = None,
@@ -84,44 +89,84 @@ def run_all(
                 "Akumulasi & Distribusi berjalan dengan kriteria harga+volume saja."
             )
 
-    # 3. Deteksi 4 sinyal
-    logger.info("Step 3/3: Deteksi sinyal ADMD...")
-    all_results = []
+    # 3. Deteksi sinyal — ADMD tetap 1 baris/ticker (prioritas), MA/MACD cross
+    # ditempel sebagai KOLOM TAMBAHAN supaya tidak saling menggusur.
+    logger.info("Step 3/3: Deteksi sinyal...")
+    admd_results = []
+    trend_results = {}  # "MA_Cross" / "MACD_Cross" -> DataFrame, dipisah dari kompetisi ADMD
+
     for name, fn in SIGNAL_FUNCS.items():
         try:
             result = fn(ohlcv, foreign_flow)
             if not result.empty:
-                all_results.append(result)
+                if name in ("MA_Cross", "MACD_Cross"):
+                    trend_results[name] = result
+                else:
+                    admd_results.append(result)
                 logger.info(f"  {SIGNAL_EMOJI[name]} {name}: {len(result)} sinyal")
             else:
                 logger.info(f"  — {name}: tidak ada sinyal")
         except Exception as e:
             logger.error(f"  ✗ {name}: {e}")
 
-    if not all_results:
+    if not admd_results and not trend_results:
         logger.warning("Tidak ada sinyal ditemukan.")
         return pd.DataFrame()
 
-    combined = pd.concat(all_results, ignore_index=True)
-    combined["ticker"] = combined["ticker"].astype(str).str.upper().str.strip()
+    # --- ADMD: tetap dedup 1 baris/ticker seperti sebelumnya ---
+    base_cols = ["ticker", "signal", "close", "strength", "note"]
+    if admd_results:
+        combined = pd.concat(admd_results, ignore_index=True)
+        combined["ticker"] = combined["ticker"].astype(str).str.upper().str.strip()
 
-    # >>> FIX: satu ticker cuma boleh 1 baris per hari (constraint DB:
-    # UNIQUE stock_code+screen_date). Karena Mark Up/Mark Down secara
-    # desain adalah SUBSET dari Akumulasi/Distribusi, ticker yang sedang
-    # breakout/breakdown akan muncul dobel kalau tidak di-dedupe. Ambil
-    # sinyal yang paling actionable per ticker.
-    SIGNAL_PRIORITY = {"Mark Up": 4, "Mark Down": 3, "Akumulasi": 2, "Distribusi": 1}
-    combined["_priority"] = combined["signal"].map(SIGNAL_PRIORITY).fillna(0)
-    combined = (
-        combined
-        .sort_values(["_priority", "strength"], ascending=[False, False])
-        .drop_duplicates(subset="ticker", keep="first")
-        .drop(columns="_priority")
-        .sort_values(["signal", "strength"], ascending=[True, False])
-        .reset_index(drop=True)
-    )
+        SIGNAL_PRIORITY = {"Mark Up": 4, "Mark Down": 3, "Akumulasi": 2, "Distribusi": 1}
+        combined["_priority"] = combined["signal"].map(SIGNAL_PRIORITY).fillna(0)
+        combined = (
+            combined
+            .sort_values(["_priority", "strength"], ascending=[False, False])
+            .drop_duplicates(subset="ticker", keep="first")
+            .drop(columns="_priority")
+        )
+    else:
+        combined = pd.DataFrame(columns=base_cols)
 
-    # >>> STAGE 3: hitung entry/stop/target/RR untuk sinyal Mark Up,
+    # --- Trend: MA cross & MACD cross jadi kolom terpisah, bukan baris baru ---
+    def _trend_columns(df, prefix):
+        cols = ["ticker", f"{prefix}_signal", f"{prefix}_note"]
+        if df is None or df.empty:
+            return pd.DataFrame(columns=cols)
+        out = df[["ticker", "signal", "note"]].rename(
+            columns={"signal": f"{prefix}_signal", "note": f"{prefix}_note"}
+        )
+        out["ticker"] = out["ticker"].astype(str).str.upper().str.strip()
+        return out
+
+    ma_cols   = _trend_columns(trend_results.get("MA_Cross"), "ma_cross")
+    macd_cols = _trend_columns(trend_results.get("MACD_Cross"), "macd_cross")
+
+    # Ticker yang HANYA kena MA/MACD (tanpa sinyal ADMD hari itu) tetap harus
+    # dimunculkan, bukan hilang begitu saja — makanya di-union dulu.
+    all_tickers = set(combined["ticker"]) | set(ma_cols["ticker"]) | set(macd_cols["ticker"])
+    missing = all_tickers - set(combined["ticker"])
+    if missing:
+        combined = pd.concat(
+            [combined, pd.DataFrame({"ticker": list(missing)})],
+            ignore_index=True
+        )
+
+    combined = combined.merge(ma_cols, on="ticker", how="left")
+    combined = combined.merge(macd_cols, on="ticker", how="left")
+
+    # Ticker trend-only tidak punya kolom 'close' dari ADMD — ambil dari OHLCV langsung.
+    missing_close = combined["close"].isna()
+    if missing_close.any():
+        combined.loc[missing_close, "close"] = combined.loc[missing_close, "ticker"].map(
+            lambda t: float(ohlcv[t]["Close"].iloc[-1]) if t in ohlcv and not ohlcv[t].empty else None
+        )
+
+    combined = combined.sort_values(["signal", "strength"], ascending=[True, False]).reset_index(drop=True)
+
+    # >>> STAGE 3: RISK MANAGER : hitung entry/stop/target/RR untuk sinyal Mark Up,
     # buang sinyal Mark Up yang RR-nya di bawah threshold minimum.
     logger.info("Step 4/4: Hitung trade setup (Stage 3)...")
     combined = risk_manager.attach_trade_setup(combined, ohlcv)
