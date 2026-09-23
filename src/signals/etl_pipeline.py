@@ -265,7 +265,8 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
         signal  = str(row.get("signal", ""))
         phase   = SIGNAL_TO_PHASE.get(signal, "unknown")
         close   = float(row.get("close",    0) or 0)
-        score   = float(row.get("strength", 0) or 0)
+        raw_score = row.get("strength", 0)
+        score = float(raw_score) if pd.notna(raw_score) else 0.0
         note    = str(row.get("note", ""))
 
         rows.append((
