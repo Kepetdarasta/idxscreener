@@ -111,6 +111,30 @@ STAGE3_ATR_STOP_MULTIPLIER  = 1.5   # stop loss = range_low - (ATR x multiplier 
 STAGE3_MIN_RISK_REWARD      = 2.0   # sinyal dengan RR di bawah ini dibuang dari hasil screening
 
 # =============================================================================
+# FALLBACK UNIVERSE — dipakai jika idx_all.csv tidak ada / gagal parse
+# =============================================================================
+
+LQ45 = [
+    "AALI", "ACES", "ADRO", "AKRA", "AMRT", "ASII", "ASRI", "BBCA",
+    "BBNI", "BBRI", "BBTN", "BMRI", "BRPT", "BSDE", "CPIN", "EMTK",
+    "ERAA", "EXCL", "GGRM", "GOTO", "HMSP", "HRUM", "ICBP", "INCO",
+    "INDF", "INTP", "ITMG", "JPFA", "JSMR", "KLBF", "MAPI", "MBMA",
+    "MDKA", "MEDC", "MIKA", "PGAS", "PTBA", "PTPP", "SMGR", "TBIG",
+    "TKIM", "TLKM", "TOWR", "UNTR", "UNVR",
+]
+
+# =============================================================================
+# SCREENING UNIVERSE — Full IDX, sumber: daftar perusahaan tercatat BEI
+# =============================================================================
+
+import pandas as pd
+
+UNIVERSE_ALL_PATH = DATA_UNIVERSE_DIR / "idx_all.csv"
+LIQUID_BOARDS = {"Papan Utama"}
+
+def load_idx_listing(path: Path):
+    ...  # (kode yang sama seperti sebelumnya, tidak berubah)
+# =============================================================================
 # SCREENING UNIVERSE — Full IDX, sumber: daftar perusahaan tercatat BEI
 # =============================================================================
 
