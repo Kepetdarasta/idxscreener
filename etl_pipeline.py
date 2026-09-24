@@ -61,22 +61,20 @@ def get_conn():
 # =============================================================================
 
 def sync_stocks(conn, tickers: list[str]) -> None:
-    """
-    Insert ticker baru ke tabel stocks.
-    Ticker yang sudah ada di-skip (ON CONFLICT DO NOTHING).
-    """
     logger.info(f"[1/5] Sync master saham — {len(tickers)} ticker")
-    rows = [(t.upper(), t.upper(), None, None, True) for t in tickers]
-
+    import config as cfg
+    rows = [
+        (t.upper(), t.upper(), None, None, True, cfg.STOCK_BOARD_MAP.get(t.upper()))
+        for t in tickers
+    ]
     with conn.cursor() as cur:
         execute_values(cur, """
-            INSERT INTO stocks (stock_code, stock_name, sector, subsector, is_active)
+            INSERT INTO stocks (stock_code, stock_name, sector, subsector, is_active, board)
             VALUES %s
-            ON CONFLICT (stock_code) DO NOTHING
+            ON CONFLICT (stock_code) DO UPDATE SET board = EXCLUDED.board
         """, rows)
     conn.commit()
     logger.info(f"       Sync selesai.")
-
 
 # =============================================================================
 # STEP 2 — FETCH & SIMPAN OHLCV
@@ -446,8 +444,10 @@ def run_pipeline(trade_date: date = None, tickers: list[str] = None) -> bool:
         # Step 3 — Foreign flow
         n_ff = save_foreign_flow(conn, tickers, trade_date)
 
-        # Step 4 — Screener
-        df_result = run_screener_and_save(conn, tickers, trade_date)
+        # Step 4 — Screener (hanya saham yang histori-nya cukup untuk golden cross)
+        import config as cfg
+        tickers_for_signal = cfg.filter_by_listing_age(tickers)
+        df_result = run_screener_and_save(conn, tickers_for_signal, trade_date)
 
         # Step 5 — Phase history
         update_phase_history(conn, df_result, trade_date)
@@ -482,7 +482,6 @@ def run_pipeline(trade_date: date = None, tickers: list[str] = None) -> bool:
     finally:
         if conn:
             conn.close()
-
 
 # =============================================================================
 # ENTRY POINT

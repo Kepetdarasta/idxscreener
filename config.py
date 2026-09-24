@@ -11,6 +11,7 @@
 from pathlib import Path
 from dotenv import load_dotenv
 import os
+import pandas as pd  # taruh dekat import lain di atas
 
 load_dotenv()  # baca .env untuk API keys
 
@@ -110,29 +111,105 @@ STAGE3_ATR_STOP_MULTIPLIER  = 1.5   # stop loss = range_low - (ATR x multiplier 
 STAGE3_MIN_RISK_REWARD      = 2.0   # sinyal dengan RR di bawah ini dibuang dari hasil screening
 
 # =============================================================================
-# SCREENING UNIVERSE DEFAULT
-# Saham mana yang di-screen jika tidak ada input spesifik
+# SCREENING UNIVERSE — Full IDX, sumber: daftar perusahaan tercatat BEI
 # =============================================================================
 
-# LQ45 — 45 saham paling likuid di IDX
-LQ45 = [
-    "AALI", "ACES", "ADRO", "AKRA", "AMRT", "ASII", "ASRI", "BBCA",
-    "BBNI", "BBRI", "BBTN", "BMRI", "BRPT", "BSDE", "CPIN", "EMTK",
-    "ERAA", "EXCL", "GGRM", "GOTO", "HMSP", "HRUM", "ICBP", "INCO",
-    "INDF", "INTP", "ITMG", "JPFA", "JSMR", "KLBF", "MAPI", "MBMA",
-    "MDKA", "MEDC", "MIKA", "PGAS", "PTBA", "PTPP", "SMGR", "TBIG",
-    "TKIM", "TLKM", "TOWR", "UNTR", "UNVR",
-]
+UNIVERSE_ALL_PATH = DATA_UNIVERSE_DIR / "idx_all.csv"
 
-# IDX High Dividend 20
-IDXHIDIV20 = [
-    "ADMR", "ASII", "BBCA", "BBNI", "BBRI", "BMRI", "BYAN",
-    "CPIN", "ELSA", "GGRM", "HMSP", "ITMG", "JPFA", "MBAP",
-    "PGAS", "PTBA", "PTRO", "SMGR", "TLKM", "UNTR",
-]
+# Papan yang dianggap "likuid" — sinyal berbasis foreign flow (Akumulasi/Distribusi) full jalan
+LIQUID_BOARDS = {"Papan Utama"}
 
-# Default universe yang dipakai screener
-DEFAULT_UNIVERSE = LQ45
+def load_idx_listing(path: Path):
+    """
+    Baca daftar resmi perusahaan tercatat BEI.
+    Kolom sumber: No, Kode, Nama Perusahaan, Tanggal Pencatatan, Saham, Papan Pencatatan
+    """
+    if not path.exists():
+        return pd.DataFrame(columns=["stock_code", "stock_name", "board", "listing_date"])
+
+    df = pd.read_csv(path, thousands=",")  # "Saham" biasanya ada pemisah ribuan
+    df = df.rename(columns={
+        "Kode": "stock_code",
+        "Nama Perusahaan": "stock_name",
+        "Papan Pencatatan": "board",
+        "Tanggal Pencatatan": "listing_date",
+        "Saham": "shares_outstanding",
+    })
+
+    df["stock_code"] = df["stock_code"].astype(str).str.upper().str.strip()
+    df["board"] = df["board"].astype(str).str.strip()
+
+    # Buang baris kotor: kode bukan 4 huruf, atau papan kosong/NaN
+    df = df[df["stock_code"].str.match(r"^[A-Z]{4}$", na=False)]
+    df = df.dropna(subset=["board"])
+
+    return df.drop_duplicates(subset="stock_code").reset_index(drop=True)
+
+
+_LISTING = load_idx_listing(UNIVERSE_ALL_PATH)
+
+# Semua saham → dipakai untuk golden cross & sinyal berbasis harga/volume
+DEFAULT_UNIVERSE = _LISTING["stock_code"].tolist() if not _LISTING.empty else LQ45
+
+# Subset likuid (Papan Utama) → dipakai untuk sinyal yang butuh foreign flow reliable
+LIQUID_UNIVERSE = (
+    _LISTING.loc[_LISTING["board"].isin(LIQUID_BOARDS), "stock_code"].tolist()
+    if not _LISTING.empty else LQ45
+)
+
+# Map stock_code -> board, dipakai sync_stocks() untuk isi kolom board di DB
+STOCK_BOARD_MAP = dict(zip(_LISTING["stock_code"], _LISTING["board"])) if not _LISTING.empty else {}
+
+
+# =============================================================================
+# Parsing tanggal listing (format BEI biasanya dd-mmm-yyyy atau dd/mm/yyyy, jadi pakai errors="coerce")
+# =============================================================================
+if not _LISTING.empty and "listing_date" in _LISTING.columns:
+    _LISTING["listing_date"] = pd.to_datetime(
+        _LISTING["listing_date"], errors="coerce", dayfirst=True
+    ).dt.date
+
+# =============================================================================
+# FILTER SAHAM BARU LISTING — histori belum cukup untuk MA50/MA200 (golden cross)
+# =============================================================================
+
+MIN_LISTING_AGE_DAYS = 200  # ganti ke 50-60 kalau golden cross Anda pakai MA50, bukan MA200
+
+def filter_by_listing_age(tickers: list[str], min_age_days: int = MIN_LISTING_AGE_DAYS,
+                           reference_date=None) -> list[str]:
+    """
+    Buang ticker yang listing_date-nya lebih baru dari cutoff — histori harga
+    belum cukup untuk indikator seperti golden cross (MA50/MA200).
+    Ticker yang tidak ditemukan di data listing (misal fallback LQ45) tetap
+    diikutkan apa adanya, karena saham lama pasti aman.
+    """
+    from datetime import date, timedelta
+    import logging
+
+    if _LISTING.empty or "listing_date" not in _LISTING.columns:
+        return tickers
+
+    reference_date = reference_date or date.today()
+    cutoff = reference_date - timedelta(days=min_age_days)
+    listing_map = dict(zip(_LISTING["stock_code"], _LISTING["listing_date"]))
+
+    result, excluded = [], []
+    for t in tickers:
+        ld = listing_map.get(t)
+        if ld is None or pd.isna(ld):
+            result.append(t)          # tanggal tidak diketahui -> jangan exclude, lebih aman
+        elif ld <= cutoff:
+            result.append(t)          # sudah cukup umur
+        else:
+            excluded.append(t)        # terlalu baru, skip dari signal generation
+
+    if excluded:
+        logging.getLogger(__name__).info(
+            f"Exclude {len(excluded)} saham baru listing (<{min_age_days} hari): "
+            f"{excluded[:10]}{'...' if len(excluded) > 10 else ''}"
+        )
+
+    return result
 
 # =============================================================================
 # LOGGING
