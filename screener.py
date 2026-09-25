@@ -18,28 +18,26 @@ import pandas as pd
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import config as cfg
-from src.signals import accumulation, distribution, markup, markdown
 from src.signals import risk_manager   # >>> STAGE 3
 from src.signals import accumulation, distribution, markup, markdown, ma_cross, macd_cross
+from src.signals import accumulation, distribution, markup, markdown, golden_cross
 
 logger = logging.getLogger(__name__)
 
 SIGNAL_FUNCS = {
-    "Akumulasi"          : accumulation.detect,
-    "Distribusi"         : distribution.detect,
-    "Mark Up"            : markup.detect,
-    "Mark Down"          : markdown.detect,
-    "MA_Golden_Cross"    : ma_cross.detect,     # detect() return campuran golden+death,
-    "MACD_Bullish_Cross" : macd_cross.detect,   # tapi didaftarkan sekali saja per modul
+    "Akumulasi"    : accumulation.detect,
+    "Distribusi"   : distribution.detect,
+    "Mark Up"      : markup.detect,
+    "Mark Down"    : markdown.detect,
+    "Golden Cross" : golden_cross.detect,
 }
-
 SIGNAL_EMOJI = {
-    "Akumulasi" : "🟢",
-    "Distribusi": "🟠",
-    "Mark Up"   : "🔵",
-    "Mark Down" : "🔴",
+    "Akumulasi"    : "🟢",
+    "Distribusi"   : "🟠",
+    "Mark Up"      : "🔵",
+    "Mark Down"    : "🔴",
+    "Golden Cross" : "✨",
 }
-
 
 def run_all(
     tickers: List[str] = None,

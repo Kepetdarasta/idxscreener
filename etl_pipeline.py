@@ -79,13 +79,16 @@ def sync_stocks(conn, tickers: list[str]) -> None:
 # =============================================================================
 # STEP 2 — FETCH & SIMPAN OHLCV
 # =============================================================================
-
 def fetch_and_save_ohlcv(conn, tickers: list[str], trade_date: date) -> int:
     """
     Fetch OHLCV dari yfinance untuk trade_date, simpan ke daily_ohlcv.
+    Di-chunk sesuai YFINANCE_BATCH_SIZE agar aman untuk universe besar.
     Return jumlah baris yang berhasil disimpan.
     """
-    logger.info(f"[2/5] Fetch OHLCV — {trade_date}")
+    import time
+    import config as cfg
+
+    logger.info(f"[2/5] Fetch OHLCV — {trade_date} ({len(tickers)} ticker)")
 
     try:
         import yfinance as yf
@@ -93,78 +96,117 @@ def fetch_and_save_ohlcv(conn, tickers: list[str], trade_date: date) -> int:
         logger.error("yfinance belum terinstall: pip install yfinance")
         return 0
 
-    # yfinance butuh range start..end+1 untuk data satu hari
     start = trade_date
     end   = trade_date + timedelta(days=1)
 
-    tickers_yf = [f"{t}.JK" for t in tickers]
-    logger.info(f"       Download {len(tickers_yf)} ticker dari yfinance...")
+    batch_size = getattr(cfg, "YFINANCE_BATCH_SIZE", 20)
+    batch_delay = getattr(cfg, "YFINANCE_BATCH_DELAY_SEC", 2)
+    batches = [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
 
-    try:
-        raw = yf.download(
-            tickers_yf,
-            start=start,
-            end=end,
-            auto_adjust=True,
-            progress=False,
-            group_by="ticker",
-        )
-    except Exception as e:
-        logger.error(f"       yfinance error: {e}")
-        return 0
+    total_saved = 0
 
-    if raw.empty:
-        logger.warning(f"       Tidak ada data OHLCV untuk {trade_date} (hari libur/weekend?)")
-        return 0
+    for bi, batch in enumerate(batches, start=1):
+        tickers_yf = [f"{t}.JK" for t in batch]
+        logger.info(f"       Batch {bi}/{len(batches)} — {len(batch)} ticker")
 
-    rows = []
-    for ticker in tickers:
-        ticker_yf = f"{ticker}.JK"
         try:
-            if len(tickers) == 1:
-                df_t = raw
-            else:
-                df_t = raw[ticker_yf] if ticker_yf in raw.columns.get_level_values(0) else pd.DataFrame()
-
-            if df_t.empty:
-                continue
-
-            row = df_t.iloc[0]
-            rows.append((
-                ticker.upper(),
-                trade_date,
-                float(row.get("Open",   0) or 0),
-                float(row.get("High",   0) or 0),
-                float(row.get("Low",    0) or 0),
-                float(row.get("Close",  0) or 0),
-                int(row.get("Volume",   0) or 0),
-                0,   # value — tidak tersedia di yfinance, isi 0
-                0,   # frequency — tidak tersedia di yfinance, isi 0
-            ))
+            raw = yf.download(
+                tickers_yf,
+                start=start,
+                end=end,
+                auto_adjust=True,
+                progress=False,
+                group_by="ticker",
+            )
         except Exception as e:
-            logger.warning(f"       {ticker}: skip — {e}")
+            logger.error(f"       Batch {bi} yfinance error: {e}")
+            time.sleep(batch_delay)
+            continue
 
-    if not rows:
-        logger.warning("       Tidak ada baris OHLCV valid.")
-        return 0
+        if raw.empty:
+            logger.warning(f"       Batch {bi}: tidak ada data (hari libur/weekend?)")
+            time.sleep(batch_delay)
+            continue
+
+        rows = []
+        for ticker in batch:
+            ticker_yf = f"{ticker}.JK"
+            try:
+                if len(batch) == 1:
+                    df_t = raw
+                else:
+                    df_t = raw[ticker_yf] if ticker_yf in raw.columns.get_level_values(0) else pd.DataFrame()
+
+                if df_t.empty:
+                    continue
+
+                row = df_t.iloc[0]
+                close_price = float(row.get("Close", 0) or 0)
+                volume      = int(row.get("Volume", 0) or 0)
+                value_approx = int(round(close_price * volume))  # approksimasi, yfinance tidak sediakan value asli
+
+                rows.append((
+                    ticker.upper(),
+                    trade_date,
+                    float(row.get("Open", 0) or 0),
+                    float(row.get("High", 0) or 0),
+                    float(row.get("Low",  0) or 0),
+                    close_price,
+                    volume,
+                    value_approx,
+                    0,
+                ))
+            except Exception as e:
+                logger.warning(f"       {ticker}: skip — {e}")
+
+        if rows:
+            with conn.cursor() as cur:
+                execute_values(cur, """
+                    INSERT INTO daily_ohlcv
+                        (stock_code, trade_date, open_price, high_price, low_price,
+                         close_price, volume, value, frequency)
+                    VALUES %s
+                    ON CONFLICT (stock_code, trade_date) DO UPDATE SET
+                        open_price  = EXCLUDED.open_price,
+                        high_price  = EXCLUDED.high_price,
+                        low_price   = EXCLUDED.low_price,
+                        close_price = EXCLUDED.close_price,
+                        volume      = EXCLUDED.volume,
+                        value       = EXCLUDED.value
+                """, rows)
+            conn.commit()
+            total_saved += len(rows)
+            logger.info(f"       Batch {bi}: {len(rows)} saham tersimpan")
+
+        if bi < len(batches):
+            time.sleep(batch_delay)
+
+    logger.info(f"       OHLCV total tersimpan: {total_saved} saham")
+    return total_saved
+
+# =============================================================================
+# UPDATE LIQUIDITY TIER — dihitung dari data trading kita sendiri
+# =============================================================================
+
+def update_liquidity_tier(conn, top_n: int = 45, window_days: int = 20) -> None:
+    """
+    Hitung ulang saham paling likuid berdasarkan data trading kita sendiri,
+    simpan hasilnya ke stocks.is_liquid + stocks.liquidity_rank.
+    """
+    from src.data_fetcher.liquidity import get_liquid_tickers
+    logger.info("Update liquidity tier...")
+
+    liquid = get_liquid_tickers(conn, top_n=top_n, window_days=window_days)
 
     with conn.cursor() as cur:
-        execute_values(cur, """
-            INSERT INTO daily_ohlcv
-                (stock_code, trade_date, open_price, high_price, low_price,
-                 close_price, volume, value, frequency)
-            VALUES %s
-            ON CONFLICT (stock_code, trade_date) DO UPDATE SET
-                open_price  = EXCLUDED.open_price,
-                high_price  = EXCLUDED.high_price,
-                low_price   = EXCLUDED.low_price,
-                close_price = EXCLUDED.close_price,
-                volume      = EXCLUDED.volume
-        """, rows)
+        cur.execute("UPDATE stocks SET is_liquid = FALSE, liquidity_rank = NULL")
+        for rank, ticker in enumerate(liquid, start=1):
+            cur.execute("""
+                UPDATE stocks SET is_liquid = TRUE, liquidity_rank = %s
+                WHERE stock_code = %s
+            """, (rank, ticker))
     conn.commit()
-    logger.info(f"       OHLCV tersimpan: {len(rows)} saham")
-    return len(rows)
-
+    logger.info(f"       Liquidity tier updated: {len(liquid)} saham likuid")
 
 # =============================================================================
 # STEP 3 — SIMPAN FOREIGN FLOW
@@ -229,10 +271,11 @@ def save_foreign_flow(conn, tickers: list[str], trade_date: date) -> int:
 
 # Mapping sinyal v1 → phase di skema v2
 SIGNAL_TO_PHASE = {
-    "Akumulasi" : "accumulation",
-    "Mark Up"   : "markup",
-    "Distribusi": "distribution",
-    "Mark Down" : "markdown",
+    "Akumulasi"   : "accumulation",
+    "Mark Up"     : "markup",
+    "Distribusi"  : "distribution",
+    "Mark Down"   : "markdown",
+    "Golden Cross": "markup",   # golden cross = konfirmasi tren naik, masuk fase markup
 }
 
 def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.DataFrame:
@@ -375,7 +418,6 @@ def update_phase_history(conn, df_screening: pd.DataFrame, trade_date: date) -> 
     conn.commit()
     logger.info("       Phase history updated.")
 
-
 # =============================================================================
 # LOGGING ETL RUN
 # =============================================================================
@@ -441,9 +483,12 @@ def run_pipeline(trade_date: date = None, tickers: list[str] = None) -> bool:
         # Step 2 — OHLCV
         n_ohlcv = fetch_and_save_ohlcv(conn, tickers, trade_date)
 
+        # Step 2b — Liquidity tier (dihitung dari data OHLCV kita sendiri)
+        update_liquidity_tier(conn)
+
         # Step 3 — Foreign flow
         n_ff = save_foreign_flow(conn, tickers, trade_date)
-
+        
         # Step 4 — Screener (hanya saham yang histori-nya cukup untuk golden cross)
         import config as cfg
         tickers_for_signal = cfg.filter_by_listing_age(tickers)

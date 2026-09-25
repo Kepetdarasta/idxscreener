@@ -15,6 +15,8 @@ import pandas as pd  # taruh dekat import lain di atas
 
 load_dotenv()  # baca .env untuk API keys
 
+YFINANCE_BATCH_DELAY_SEC = 2   # jeda antar batch, hindari rate limit Yahoo
+
 # =============================================================================
 # PATHS
 # =============================================================================
@@ -114,14 +116,8 @@ STAGE3_MIN_RISK_REWARD      = 2.0   # sinyal dengan RR di bawah ini dibuang dari
 # FALLBACK UNIVERSE — dipakai jika idx_all.csv tidak ada / gagal parse
 # =============================================================================
 
-LQ45 = [
-    "AALI", "ACES", "ADRO", "AKRA", "AMRT", "ASII", "ASRI", "BBCA",
-    "BBNI", "BBRI", "BBTN", "BMRI", "BRPT", "BSDE", "CPIN", "EMTK",
-    "ERAA", "EXCL", "GGRM", "GOTO", "HMSP", "HRUM", "ICBP", "INCO",
-    "INDF", "INTP", "ITMG", "JPFA", "JSMR", "KLBF", "MAPI", "MBMA",
-    "MDKA", "MEDC", "MIKA", "PGAS", "PTBA", "PTPP", "SMGR", "TBIG",
-    "TKIM", "TLKM", "TOWR", "UNTR", "UNVR",
-]
+# Emergency fallback minimal — dipakai HANYA jika idx_all.csv gagal dibaca total
+LQ45 = ["BBCA", "BBRI", "BMRI", "TLKM", "ASII"]
 
 # =============================================================================
 # SCREENING UNIVERSE — Full IDX, sumber: daftar perusahaan tercatat BEI
