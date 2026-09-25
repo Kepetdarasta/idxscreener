@@ -20,7 +20,7 @@ import streamlit as st
 
 import config as cfg
 from src.dashboard import db
-from src.dashboard.components import render_ohlcv_chart, render_foreign_flow_chart
+from src.dashboard.components import render_ohlcv_chart, render_foreign_flow_chart, render_phase_timeline_chart
 
 st.set_page_config(
     page_title=cfg.DASHBOARD_TITLE,
@@ -260,8 +260,15 @@ with tab3:
     else:
         st.info("Belum ada data foreign flow untuk saham ini.")
 
-    st.markdown("#### Riwayat Fase")
+    st.markdown("#### Timeline Pergerakan Fase")
     phase_hist = db.get_phase_history(selected)
+    if not phase_hist.empty:
+        earliest_phase = pd.to_datetime(phase_hist["phase_start"].min())
+        days_needed = (pd.Timestamp.today() - earliest_phase).days + 30
+        price_for_phase = db.get_ohlcv(selected, days=max(days_needed, 90))
+        render_phase_timeline_chart(selected, price_for_phase, phase_hist)
+
+    st.markdown("#### Riwayat Fase")
     if not phase_hist.empty:
         show_hist = phase_hist.copy()
         show_hist["phase"] = show_hist["phase"].map(PHASE_TO_SIGNAL).fillna(show_hist["phase"])

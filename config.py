@@ -255,6 +255,14 @@ SIGNAL_COLORS = {
     "Mark Down" : "#ef4444",   # merah
 }
 
+PHASE_COLORS = {
+    "accumulation": "#22c55e",
+    "markup":       "#3b82f6",
+    "distribution": "#f97316",
+    "markdown":     "#ef4444",
+    "unknown":      "#9ca3af",
+}
+
 # =============================================================================
 # SCHEDULER (GitHub Actions / APScheduler — Fase 2 & 3)
 # =============================================================================

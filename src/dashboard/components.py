@@ -129,7 +129,72 @@ def render_foreign_flow_chart(ticker: str, foreign_df: pd.DataFrame) -> None:
 
     st.plotly_chart(fig, width="stretch")
 
+PHASE_COLORS = {
+    "accumulation": "#22c55e",
+    "markup":       "#3b82f6",
+    "distribution": "#f97316",
+    "markdown":     "#ef4444",
+    "unknown":      "#94a3b8",
+}
 
+
+def render_phase_timeline_chart(ticker: str, price_df: pd.DataFrame, phase_df: pd.DataFrame) -> None:
+    """
+    Timeline harga dengan background berwarna menandai fase siklus
+    (akumulasi/markup/distribusi/markdown) pada rentang waktu tersebut.
+
+    price_df: hasil db.get_ohlcv() — index=trade_date, kolom Close.
+    phase_df: hasil db.get_phase_history() — kolom phase, phase_start,
+              phase_end, price_change_pct.
+    """
+    if price_df.empty:
+        st.warning("Data harga tidak cukup untuk chart fase.")
+        return
+    if phase_df.empty:
+        st.info("Belum ada riwayat fase untuk saham ini.")
+        return
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=price_df.index,
+            y=price_df["Close"],
+            mode="lines",
+            name="Close Price",
+            line=dict(color="#1e293b", width=1.5),
+        )
+    )
+
+    last_date = price_df.index.max()
+
+    for _, row in phase_df.iterrows():
+        x0 = row["phase_start"]
+        x1 = row["phase_end"] if pd.notna(row["phase_end"]) else last_date
+        color = PHASE_COLORS.get(row["phase"], PHASE_COLORS["unknown"])
+        pct = row.get("price_change_pct")
+        label = row["phase"] + (f" ({pct:+.1f}%)" if pd.notna(pct) else " (berjalan)")
+
+        fig.add_vrect(
+            x0=x0, x1=x1,
+            fillcolor=color, opacity=0.15, line_width=0,
+            annotation_text=label, annotation_position="top left",
+            annotation=dict(font_size=10, font_color="#475569"),
+        )
+
+    fig.update_layout(
+        title=f"{ticker} — Timeline Pergerakan Fase",
+        height=420,
+        margin=dict(l=0, r=0, t=40, b=0),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        showlegend=False,
+    )
+    fig.update_xaxes(showgrid=True, gridcolor="#f1f5f9")
+    fig.update_yaxes(showgrid=True, gridcolor="#f1f5f9", title="Harga (Rp)")
+
+    st.plotly_chart(fig, width="stretch")
+    
 def render_signal_badge(signal: str) -> str:
     """Return HTML badge string untuk sinyal."""
     colors = {
