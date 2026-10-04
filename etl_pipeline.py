@@ -5,6 +5,9 @@
 # Jalankan manual:  python etl_pipeline.py
 # Atau otomatis via scheduler (lihat scheduler.py)
 #
+# CATATAN: pipeline ini HANYA untuk jalur Wyckoff (jangka panjang).
+# Sinyal swing (MA/MACD cross) ada di etl_swing.py — sengaja dipisah.
+#
 # Urutan proses:
 #   1. Sync master saham  → tabel stocks
 #   2. Fetch & simpan OHLCV harian → tabel daily_ohlcv
@@ -61,34 +64,33 @@ def get_conn():
 # =============================================================================
 
 def sync_stocks(conn, tickers: list[str]) -> None:
+    """
+    Insert ticker baru ke tabel stocks.
+    Ticker yang sudah ada di-skip (ON CONFLICT DO NOTHING).
+    """
     logger.info(f"[1/5] Sync master saham — {len(tickers)} ticker")
-    import config as cfg
-    rows = [
-        (t.upper(), t.upper(), None, None, True, cfg.STOCK_BOARD_MAP.get(t.upper()))
-        for t in tickers
-    ]
+    rows = [(t.upper(), t.upper(), None, None, True) for t in tickers]
+
     with conn.cursor() as cur:
         execute_values(cur, """
-            INSERT INTO stocks (stock_code, stock_name, sector, subsector, is_active, board)
+            INSERT INTO stocks (stock_code, stock_name, sector, subsector, is_active)
             VALUES %s
-            ON CONFLICT (stock_code) DO UPDATE SET board = EXCLUDED.board
+            ON CONFLICT (stock_code) DO NOTHING
         """, rows)
     conn.commit()
     logger.info(f"       Sync selesai.")
 
+
 # =============================================================================
 # STEP 2 — FETCH & SIMPAN OHLCV
 # =============================================================================
+
 def fetch_and_save_ohlcv(conn, tickers: list[str], trade_date: date) -> int:
     """
     Fetch OHLCV dari yfinance untuk trade_date, simpan ke daily_ohlcv.
-    Di-chunk sesuai YFINANCE_BATCH_SIZE agar aman untuk universe besar.
     Return jumlah baris yang berhasil disimpan.
     """
-    import time
-    import config as cfg
-
-    logger.info(f"[2/5] Fetch OHLCV — {trade_date} ({len(tickers)} ticker)")
+    logger.info(f"[2/5] Fetch OHLCV — {trade_date}")
 
     try:
         import yfinance as yf
@@ -96,117 +98,78 @@ def fetch_and_save_ohlcv(conn, tickers: list[str], trade_date: date) -> int:
         logger.error("yfinance belum terinstall: pip install yfinance")
         return 0
 
+    # yfinance butuh range start..end+1 untuk data satu hari
     start = trade_date
     end   = trade_date + timedelta(days=1)
 
-    batch_size = getattr(cfg, "YFINANCE_BATCH_SIZE", 20)
-    batch_delay = getattr(cfg, "YFINANCE_BATCH_DELAY_SEC", 2)
-    batches = [tickers[i:i + batch_size] for i in range(0, len(tickers), batch_size)]
+    tickers_yf = [f"{t}.JK" for t in tickers]
+    logger.info(f"       Download {len(tickers_yf)} ticker dari yfinance...")
 
-    total_saved = 0
+    try:
+        raw = yf.download(
+            tickers_yf,
+            start=start,
+            end=end,
+            auto_adjust=True,
+            progress=False,
+            group_by="ticker",
+        )
+    except Exception as e:
+        logger.error(f"       yfinance error: {e}")
+        return 0
 
-    for bi, batch in enumerate(batches, start=1):
-        tickers_yf = [f"{t}.JK" for t in batch]
-        logger.info(f"       Batch {bi}/{len(batches)} — {len(batch)} ticker")
+    if raw.empty:
+        logger.warning(f"       Tidak ada data OHLCV untuk {trade_date} (hari libur/weekend?)")
+        return 0
 
+    rows = []
+    for ticker in tickers:
+        ticker_yf = f"{ticker}.JK"
         try:
-            raw = yf.download(
-                tickers_yf,
-                start=start,
-                end=end,
-                auto_adjust=True,
-                progress=False,
-                group_by="ticker",
-            )
+            if len(tickers) == 1:
+                df_t = raw
+            else:
+                df_t = raw[ticker_yf] if ticker_yf in raw.columns.get_level_values(0) else pd.DataFrame()
+
+            if df_t.empty:
+                continue
+
+            row = df_t.iloc[0]
+            rows.append((
+                ticker.upper(),
+                trade_date,
+                float(row.get("Open",   0) or 0),
+                float(row.get("High",   0) or 0),
+                float(row.get("Low",    0) or 0),
+                float(row.get("Close",  0) or 0),
+                int(row.get("Volume",   0) or 0),
+                0,   # value — tidak tersedia di yfinance, isi 0
+                0,   # frequency — tidak tersedia di yfinance, isi 0
+            ))
         except Exception as e:
-            logger.error(f"       Batch {bi} yfinance error: {e}")
-            time.sleep(batch_delay)
-            continue
+            logger.warning(f"       {ticker}: skip — {e}")
 
-        if raw.empty:
-            logger.warning(f"       Batch {bi}: tidak ada data (hari libur/weekend?)")
-            time.sleep(batch_delay)
-            continue
-
-        rows = []
-        for ticker in batch:
-            ticker_yf = f"{ticker}.JK"
-            try:
-                if len(batch) == 1:
-                    df_t = raw
-                else:
-                    df_t = raw[ticker_yf] if ticker_yf in raw.columns.get_level_values(0) else pd.DataFrame()
-
-                if df_t.empty:
-                    continue
-
-                row = df_t.iloc[0]
-                close_price = float(row.get("Close", 0) or 0)
-                volume      = int(row.get("Volume", 0) or 0)
-                value_approx = int(round(close_price * volume))  # approksimasi, yfinance tidak sediakan value asli
-
-                rows.append((
-                    ticker.upper(),
-                    trade_date,
-                    float(row.get("Open", 0) or 0),
-                    float(row.get("High", 0) or 0),
-                    float(row.get("Low",  0) or 0),
-                    close_price,
-                    volume,
-                    value_approx,
-                    0,
-                ))
-            except Exception as e:
-                logger.warning(f"       {ticker}: skip — {e}")
-
-        if rows:
-            with conn.cursor() as cur:
-                execute_values(cur, """
-                    INSERT INTO daily_ohlcv
-                        (stock_code, trade_date, open_price, high_price, low_price,
-                         close_price, volume, value, frequency)
-                    VALUES %s
-                    ON CONFLICT (stock_code, trade_date) DO UPDATE SET
-                        open_price  = EXCLUDED.open_price,
-                        high_price  = EXCLUDED.high_price,
-                        low_price   = EXCLUDED.low_price,
-                        close_price = EXCLUDED.close_price,
-                        volume      = EXCLUDED.volume,
-                        value       = EXCLUDED.value
-                """, rows)
-            conn.commit()
-            total_saved += len(rows)
-            logger.info(f"       Batch {bi}: {len(rows)} saham tersimpan")
-
-        if bi < len(batches):
-            time.sleep(batch_delay)
-
-    logger.info(f"       OHLCV total tersimpan: {total_saved} saham")
-    return total_saved
-
-# =============================================================================
-# UPDATE LIQUIDITY TIER — dihitung dari data trading kita sendiri
-# =============================================================================
-
-def update_liquidity_tier(conn, top_n: int = 45, window_days: int = 20) -> None:
-    """
-    Hitung ulang saham paling likuid berdasarkan data trading kita sendiri,
-    simpan hasilnya ke stocks.is_liquid + stocks.liquidity_rank.
-    """
-    from src.data_fetcher.liquidity import get_liquid_tickers
-    logger.info("Update liquidity tier...")
-
-    liquid = get_liquid_tickers(conn, top_n=top_n, window_days=window_days)
+    if not rows:
+        logger.warning("       Tidak ada baris OHLCV valid.")
+        return 0
 
     with conn.cursor() as cur:
-        cur.execute("UPDATE stocks SET is_liquid = FALSE, liquidity_rank = NULL")
-        for rank, ticker in enumerate(liquid, start=1):
-            cur.execute("""
-                UPDATE stocks SET is_liquid = TRUE, liquidity_rank = %s
-                WHERE stock_code = %s
-            """, (rank, ticker))
+        execute_values(cur, """
+            INSERT INTO daily_ohlcv
+                (stock_code, trade_date, open_price, high_price, low_price,
+                 close_price, volume, value, frequency)
+            VALUES %s
+            ON CONFLICT (stock_code, trade_date) DO UPDATE SET
+                open_price  = EXCLUDED.open_price,
+                high_price  = EXCLUDED.high_price,
+                low_price   = EXCLUDED.low_price,
+                close_price = EXCLUDED.close_price,
+                volume      = EXCLUDED.volume
+        """, rows)
     conn.commit()
-    logger.info(f"       Liquidity tier updated: {len(liquid)} saham likuid")
+    logger.info(f"       OHLCV tersimpan: {len(rows)} saham")
+    return len(rows)
+
 
 # =============================================================================
 # STEP 3 — SIMPAN FOREIGN FLOW
@@ -271,12 +234,31 @@ def save_foreign_flow(conn, tickers: list[str], trade_date: date) -> int:
 
 # Mapping sinyal v1 → phase di skema v2
 SIGNAL_TO_PHASE = {
-    "Akumulasi"   : "accumulation",
-    "Mark Up"     : "markup",
-    "Distribusi"  : "distribution",
-    "Mark Down"   : "markdown",
-    "Golden Cross": "markup",   # golden cross = konfirmasi tren naik, masuk fase markup
+    "Akumulasi" : "accumulation",
+    "Mark Up"   : "markup",
+    "Distribusi": "distribution",
+    "Mark Down" : "markdown",
 }
+
+def _wyckoff_only(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Sisakan hanya sinyal Wyckoff (ADMD) dan maksimal SATU sinyal per saham
+    (strength tertinggi). Tanpa ini, saham yang kena dua sinyal di hari yang sama
+    bikin ON CONFLICT error di screening_results dan fase bolak-balik di phase_history.
+    """
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df[df["signal"].isin(SIGNAL_TO_PHASE.keys())].copy()
+    if out.empty:
+        return out
+    out["_t"] = out["ticker"].astype(str).str.upper()
+    return (
+        out.sort_values("strength", ascending=False)
+           .drop_duplicates("_t", keep="first")
+           .drop(columns="_t")
+           .reset_index(drop=True)
+    )
+
 
 def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.DataFrame:
     """
@@ -291,7 +273,8 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
         logger.error("Tidak bisa import screener — pastikan path benar")
         return pd.DataFrame()
 
-    df = run_all(tickers=tickers, use_cache=True, save_output=False)
+    df = run_all(tickers=tickers, use_cache=True, save_output=False, as_of_date=trade_date)
+    df = _wyckoff_only(df)
     if df.empty:
         logger.warning("       Screener tidak menghasilkan sinyal.")
         return pd.DataFrame()
@@ -306,22 +289,20 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
         signal  = str(row.get("signal", ""))
         phase   = SIGNAL_TO_PHASE.get(signal, "unknown")
         close   = float(row.get("close",    0) or 0)
-        raw_score = row.get("strength", 0)
-        score = float(raw_score) if pd.notna(raw_score) else 0.0
+        score   = float(row.get("strength", 0) or 0)
         note    = str(row.get("note", ""))
 
         rows.append((
             ticker,
             trade_date,
             close,
-            None, None, None, None,
-            signal, 
-            min(100, max(0, int(score * 10))),
+            None,   # volume_ratio — belum ada di v1, akan diisi nanti
+            None,   # ff_net_3d
+            None,   # ff_net_5d
+            None,   # ff_net_20d
+            signal, # signal_type (nama asli dari v1)
+            min(100, max(0, int(score * 10))),  # normalize 0–10 → 0–100
             phase,
-            row.get("ma_cross_signal") or None,
-            row.get("ma_cross_note") or None,
-            row.get("macd_cross_signal") or None,
-            row.get("macd_cross_note") or None,
         ))
 
     if not rows:
@@ -332,22 +313,18 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
             INSERT INTO screening_results
                 (stock_code, screen_date, close_price, volume_ratio,
                  ff_net_3d, ff_net_5d, ff_net_20d,
-                 signal_type, signal_score, phase,
-                 ma_cross_signal, ma_cross_note, macd_cross_signal, macd_cross_note)
+                 signal_type, signal_score, phase)
             VALUES %s
             ON CONFLICT (stock_code, screen_date) DO UPDATE SET
-                close_price       = EXCLUDED.close_price,
-                signal_type       = EXCLUDED.signal_type,
-                signal_score      = EXCLUDED.signal_score,
-                phase             = EXCLUDED.phase,
-                ma_cross_signal   = EXCLUDED.ma_cross_signal,
-                ma_cross_note     = EXCLUDED.ma_cross_note,
-                macd_cross_signal = EXCLUDED.macd_cross_signal,
-                macd_cross_note   = EXCLUDED.macd_cross_note
+                close_price  = EXCLUDED.close_price,
+                signal_type  = EXCLUDED.signal_type,
+                signal_score = EXCLUDED.signal_score,
+                phase        = EXCLUDED.phase
         """, rows)
     conn.commit()
     logger.info(f"       Screening results tersimpan: {len(rows)} baris")
     return df
+
 
 # =============================================================================
 # STEP 5 — DETEKSI & UPDATE FASE
@@ -355,25 +332,31 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
 
 def update_phase_history(conn, df_screening: pd.DataFrame, trade_date: date) -> None:
     """
-    Bandingkan fase hari ini vs kemarin.
-    Jika fase berubah → tutup fase lama, buka fase baru di phase_history.
+    Update phase_history. Aturan (Wyckoff = jangka panjang):
+      - Fase berubah HANYA jika screener mendeteksi fase LAIN untuk saham itu.
+      - Saham tanpa sinyal hari ini -> fase aktif dibiarkan berjalan (phase_end tetap NULL).
+      - Fase lama ditutup di tanggal fase baru dimulai, dengan price_at_end = harga hari itu
+        (tanggal & harga konsisten).
+      - Idempotent: menjalankan ulang tanggal yang sama tidak menggandakan baris.
     """
     logger.info(f"[5/5] Update phase history — {trade_date}")
 
-    if df_screening.empty:
-        logger.info("       Tidak ada data screening, skip.")
+    df = _wyckoff_only(df_screening)
+    if df.empty:
+        logger.info("       Tidak ada sinyal Wyckoff hari ini, fase aktif dibiarkan berjalan.")
         return
 
+    n_new = n_switch = 0
     with conn.cursor() as cur:
-        for _, row in df_screening.iterrows():
+        for _, row in df.iterrows():
             ticker = str(row["ticker"]).upper()
-            signal = str(row.get("signal", ""))
-            phase  = SIGNAL_TO_PHASE.get(signal, "unknown")
+            phase  = SIGNAL_TO_PHASE[row["signal"]]
             close  = float(row.get("close", 0) or 0)
+            if close <= 0:
+                continue
 
-            # Cek apakah ada fase aktif (phase_end IS NULL) untuk ticker ini
             cur.execute("""
-                SELECT id, phase, price_at_start
+                SELECT id, phase, phase_start
                 FROM phase_history
                 WHERE stock_code = %s AND phase_end IS NULL
                 ORDER BY phase_start DESC LIMIT 1
@@ -381,42 +364,46 @@ def update_phase_history(conn, df_screening: pd.DataFrame, trade_date: date) -> 
             active = cur.fetchone()
 
             if active is None:
-                # Belum ada fase → buka fase baru
                 cur.execute("""
-                    INSERT INTO phase_history
-                        (stock_code, phase, phase_start, price_at_start)
+                    INSERT INTO phase_history (stock_code, phase, phase_start, price_at_start)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT DO NOTHING
                 """, (ticker, phase, trade_date, close))
+                n_new += 1
+                continue
 
-            elif active[1] != phase:
-                # Fase berubah → tutup fase lama, buka fase baru.
-                # PENTING: phase_end harus hari bursa TERAKHIR yang benar-benar
-                # ada datanya (bukan trade_date - 1), karena bisa ada gap
-                # weekend/libur di antara dua tanggal screening yang berurutan.
+            active_id, active_phase, active_start = active
+
+            if active_phase == phase:
+                continue  # fase sama -> tetap berjalan
+
+            if active_start > trade_date:
+                logger.warning(f"       {ticker}: fase aktif dimulai {active_start} > {trade_date}, skip (backfill tidak berurutan?)")
+                continue
+
+            if active_start == trade_date:
+                # re-run di hari yang sama dengan hasil berbeda -> koreksi in-place
                 cur.execute("""
-                    SELECT MAX(screen_date) FROM screening_results
-                    WHERE stock_code = %s AND screen_date < %s
-                """, (ticker, trade_date))
-                last_trade_date = cur.fetchone()[0] or (trade_date - timedelta(days=1))
-
-                old_id = active[0]
+                    UPDATE phase_history
+                    SET phase = %s, price_at_start = %s, updated_at = NOW()
+                    WHERE id = %s
+                """, (phase, close, active_id))
+            else:
                 cur.execute("""
                     UPDATE phase_history
                     SET phase_end = %s, price_at_end = %s, updated_at = NOW()
                     WHERE id = %s
-                """, (last_trade_date, close, old_id))
-
+                """, (trade_date, close, active_id))
                 cur.execute("""
-                    INSERT INTO phase_history
-                        (stock_code, phase, phase_start, price_at_start)
+                    INSERT INTO phase_history (stock_code, phase, phase_start, price_at_start)
                     VALUES (%s, %s, %s, %s)
                 """, (ticker, phase, trade_date, close))
 
-                logger.info(f"       {ticker}: {active[1]} → {phase}")
+            n_switch += 1
+            logger.info(f"       {ticker}: {active_phase} → {phase}")
 
     conn.commit()
-    logger.info("       Phase history updated.")
+    logger.info(f"       Phase history updated: {n_new} fase baru, {n_switch} transisi.")
+
 
 # =============================================================================
 # LOGGING ETL RUN
@@ -482,17 +469,22 @@ def run_pipeline(trade_date: date = None, tickers: list[str] = None) -> bool:
 
         # Step 2 — OHLCV
         n_ohlcv = fetch_and_save_ohlcv(conn, tickers, trade_date)
-
-        # Step 2b — Liquidity tier (dihitung dari data OHLCV kita sendiri)
-        update_liquidity_tier(conn)
+        if n_ohlcv == 0:
+            # Libur bursa (atau yfinance gagal): jangan lanjut, kalau tidak sinyal data lama
+            # akan tersimpan dengan label tanggal ini.
+            logger.warning(f"OHLCV kosong untuk {trade_date} — step 3-5 di-skip")
+            log_etl_run(
+                conn, trade_date, "full_pipeline", "partial", total=len(tickers),
+                error="OHLCV kosong (libur bursa atau yfinance gagal) — step 3-5 di-skip",
+                started_at=started_at,
+            )
+            return True
 
         # Step 3 — Foreign flow
         n_ff = save_foreign_flow(conn, tickers, trade_date)
-        
-        # Step 4 — Screener (hanya saham yang histori-nya cukup untuk golden cross)
-        import config as cfg
-        tickers_for_signal = cfg.filter_by_listing_age(tickers)
-        df_result = run_screener_and_save(conn, tickers_for_signal, trade_date)
+
+        # Step 4 — Screener
+        df_result = run_screener_and_save(conn, tickers, trade_date)
 
         # Step 5 — Phase history
         update_phase_history(conn, df_result, trade_date)
@@ -527,6 +519,7 @@ def run_pipeline(trade_date: date = None, tickers: list[str] = None) -> bool:
     finally:
         if conn:
             conn.close()
+
 
 # =============================================================================
 # ENTRY POINT

@@ -1,9 +1,9 @@
 # =============================================================================
-# src/signals/macd_cross.py — Deteksi MACD Bullish/Bearish Crossover
+# src/swing/macd_cross.py — Deteksi MACD Bullish/Bearish Crossover
 #
-# Mengikuti pola detect(ohlcv, foreign_flow) -> DataFrame seperti
-# accumulation.py / markup.py, sehingga bisa langsung didaftarkan ke
-# SIGNAL_FUNCS di src/signals/screener.py.
+# JALUR SWING (data harian) — TERPISAH dari Wyckoff/ADMD.
+# Didaftarkan di src/swing/swing_screener.py, BUKAN di src/signals/screener.py.
+# Signature detect(ohlcv, foreign_flow=None) -> DataFrame dipertahankan.
 #
 # MACD standar (12, 26, 9):
 #   macd_line   = EMA(12) - EMA(26)

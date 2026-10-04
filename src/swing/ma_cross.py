@@ -1,9 +1,9 @@
 # =============================================================================
-# src/signals/ma_cross.py — Deteksi Golden Cross / Death Cross (MA5 x MA20)
+# src/swing/ma_cross.py — Deteksi Golden Cross / Death Cross (MA5 x MA20)
 #
-# Mengikuti pola detect(ohlcv, foreign_flow) -> DataFrame seperti
-# accumulation.py / markup.py, sehingga bisa langsung didaftarkan ke
-# SIGNAL_FUNCS di src/signals/screener.py.
+# JALUR SWING (data harian) — TERPISAH dari Wyckoff/ADMD.
+# Didaftarkan di src/swing/swing_screener.py, BUKAN di src/signals/screener.py.
+# Signature detect(ohlcv, foreign_flow=None) -> DataFrame dipertahankan.
 #
 # ohlcv    : dict[ticker] -> DataFrame dengan kolom Open, High, Low, Close, Volume
 #            (index atau kolom tanggal terurut naik)
