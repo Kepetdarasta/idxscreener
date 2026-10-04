@@ -34,7 +34,7 @@ jobs:
           pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run ETL pipeline
+      - name: Run ETL pipeline (Wyckoff)
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
@@ -44,6 +44,19 @@ jobs:
             python etl_pipeline.py --date ${{ github.event.inputs.trade_date }}
           else
             python etl_pipeline.py
+          fi
+
+      - name: Run ETL swing (MA & MACD cross)
+        if: always()
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ "${{ github.event.inputs.backfill }}" != "" ] && [ "${{ github.event.inputs.backfill }}" != "0" ]; then
+            python etl_swing.py --backfill ${{ github.event.inputs.backfill }}
+          elif [ "${{ github.event.inputs.trade_date }}" != "" ]; then
+            python etl_swing.py --date ${{ github.event.inputs.trade_date }}
+          else
+            python etl_swing.py
           fi
 
       - name: Upload ETL log
