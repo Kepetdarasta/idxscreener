@@ -44,10 +44,6 @@ YFINANCE_PERIOD  = "60d"          # periode download default (60 hari)
 YFINANCE_INTERVAL = "1d"          # interval: 1d = harian
 YFINANCE_BATCH_SIZE = 20          # max ticker per request (hindari rate limit)
 
-# IDX Foreign Flow (download manual dari IDX.co.id)
-IDX_FOREIGN_DATE_FORMAT = "%Y%m%d"   # format nama file: foreign_flow_YYYYMMDD.csv
-IDX_FOREIGN_ENCODING    = "utf-8"
-
 # API premium (Fase 3) — ambil dari .env
 RTI_API_KEY  = os.getenv("RTI_API_KEY", "")
 RTI_BASE_URL = os.getenv("RTI_BASE_URL", "https://api.rtiinvestor.com/v1")
@@ -57,16 +53,15 @@ RTI_BASE_URL = os.getenv("RTI_BASE_URL", "https://api.rtiinvestor.com/v1")
 # Ubah di sini untuk fine-tuning, TIDAK perlu menyentuh kode sinyal
 # =============================================================================
 
-# --- AKUMULASI ---
-# Net buy asing Rp 200 miliar dalam 5 hari, harga naik pelan
-ACCUM_NET_BUY_MIN      = 200_000_000_000   # Rp 200 miliar (dalam rupiah)
-ACCUM_WINDOW_DAYS      = 5                 # periode akumulasi
-ACCUM_PRICE_CHANGE_MAX = 0.05              # harga naik MAKSIMAL 5% (naik pelan)
-ACCUM_PRICE_CHANGE_MIN = -0.01             # tidak boleh turun lebih dari 1%
+# --- AKUMULASI (konsolidasi: BB menyempit + OBV naik) ---
+# CATATAN: YFINANCE_PERIOD="60d" hanya ~40 hari bursa, jadi BB_LOOKBACK_DAYS
+# harus <= ~35 supaya min_len di accumulation.py tidak membuat semua saham di-skip.
+ACCUM_WINDOW_DAYS_V2    = 10     # window slope OBV
+ACCUM_BB_PERIOD         = 20     # periode Bollinger Band
+ACCUM_BB_LOOKBACK_DAYS  = 30     # histori BB width untuk hitung persentil
+ACCUM_BB_PERCENTILE_MAX = 0.25   # BB width sekarang harus di 25% terendah
 
-# --- DISTRIBUSI ---
-# Net sell asing Rp 150 miliar, harga stagnan/turun, ritel dominan beli
-DIST_NET_SELL_MIN      = -150_000_000_000  # Rp -150 miliar (negatif = net sell)
+# --- DISTRIBUSI (harga stagnan/turun tipis + volume masih ramai) ---
 DIST_WINDOW_DAYS       = 5
 DIST_PRICE_CHANGE_MAX  = 0.02              # harga stagnan: naik maks 2%
 DIST_PRICE_CHANGE_MIN  = -0.10             # atau turun maks 10%
@@ -79,10 +74,9 @@ MARKUP_PRICE_BREAKOUT    = 0.03            # harga naik minimal 3% dalam 1 hari
 MARKUP_BREAKOUT_WINDOW   = 5              # atau breakout dari high 5 hari terakhir
 
 # --- MARK DOWN ---
-# Harga turun tajam, net sell asing berlanjut
+# Harga turun tajam disertai volume di atas rata-rata
 MARKDOWN_PRICE_DROP_MIN  = -0.05           # harga turun minimal 5% dalam 3 hari
 MARKDOWN_PRICE_WINDOW    = 3
-MARKDOWN_NET_SELL_MIN    = -50_000_000_000 # net sell asing Rp -50 miliar
 MARKDOWN_VOLUME_RATIO_MIN = 1.2            # volume di atas rata-rata (konfirmasi)
 
 # =============================================================================

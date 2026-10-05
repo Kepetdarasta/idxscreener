@@ -11,9 +11,8 @@
 # Urutan proses:
 #   1. Sync master saham  → tabel stocks
 #   2. Fetch & simpan OHLCV harian → tabel daily_ohlcv
-#   3. Parsing & simpan foreign flow → tabel foreign_flow
-#   4. Jalankan screener ADMD → tabel screening_results
-#   5. Deteksi & update fase → tabel phase_history
+#   3. Jalankan screener ADMD → tabel screening_results
+#   4. Deteksi & update fase → tabel phase_history
 # =============================================================================
 
 import logging
@@ -68,7 +67,7 @@ def sync_stocks(conn, tickers: list[str]) -> None:
     Insert ticker baru ke tabel stocks.
     Ticker yang sudah ada di-skip (ON CONFLICT DO NOTHING).
     """
-    logger.info(f"[1/5] Sync master saham — {len(tickers)} ticker")
+    logger.info(f"[1/4] Sync master saham — {len(tickers)} ticker")
     rows = [(t.upper(), t.upper(), None, None, True) for t in tickers]
 
     with conn.cursor() as cur:
@@ -90,7 +89,7 @@ def fetch_and_save_ohlcv(conn, tickers: list[str], trade_date: date) -> int:
     Fetch OHLCV dari yfinance untuk trade_date, simpan ke daily_ohlcv.
     Return jumlah baris yang berhasil disimpan.
     """
-    logger.info(f"[2/5] Fetch OHLCV — {trade_date}")
+    logger.info(f"[2/4] Fetch OHLCV — {trade_date}")
 
     try:
         import yfinance as yf
@@ -172,64 +171,7 @@ def fetch_and_save_ohlcv(conn, tickers: list[str], trade_date: date) -> int:
 
 
 # =============================================================================
-# STEP 3 — SIMPAN FOREIGN FLOW
-# =============================================================================
-
-def save_foreign_flow(conn, tickers: list[str], trade_date: date) -> int:
-    """
-    Baca data foreign flow dari screener v1 (idx_foreign_parser),
-    simpan ke tabel foreign_flow untuk trade_date.
-    Return jumlah baris tersimpan.
-    """
-    logger.info(f"[3/5] Simpan foreign flow — {trade_date}")
-
-    try:
-        from src.data_fetcher.idx_foreign_parser import load_foreign_flow
-    except ImportError:
-        logger.error("Tidak bisa import idx_foreign_parser — pastikan path benar")
-        return 0
-
-    df = load_foreign_flow(tickers, days=20)  # ambil 20 hari untuk rolling
-    if df.empty:
-        logger.warning("       Tidak ada data foreign flow.")
-        return 0
-
-    # Filter hanya trade_date yang diminta
-    df["date"] = pd.to_datetime(df["date"]).dt.date
-    df_day = df[df["date"] == trade_date].copy()
-
-    if df_day.empty:
-        logger.warning(f"       Tidak ada foreign flow untuk {trade_date}")
-        return 0
-
-    rows = []
-    for _, row in df_day.iterrows():
-        rows.append((
-            str(row["ticker"]).upper(),
-            trade_date,
-            int(row.get("foreign_buy",  0) or 0),
-            int(row.get("foreign_sell", 0) or 0),
-        ))
-
-    if not rows:
-        return 0
-
-    with conn.cursor() as cur:
-        execute_values(cur, """
-            INSERT INTO foreign_flow
-                (stock_code, trade_date, foreign_buy_lot, foreign_sell_lot)
-            VALUES %s
-            ON CONFLICT (stock_code, trade_date) DO UPDATE SET
-                foreign_buy_lot  = EXCLUDED.foreign_buy_lot,
-                foreign_sell_lot = EXCLUDED.foreign_sell_lot
-        """, rows)
-    conn.commit()
-    logger.info(f"       Foreign flow tersimpan: {len(rows)} saham")
-    return len(rows)
-
-
-# =============================================================================
-# STEP 4 — JALANKAN SCREENER & SIMPAN HASIL
+# STEP 3 — JALANKAN SCREENER & SIMPAN HASIL
 # =============================================================================
 
 # Mapping sinyal v1 → phase di skema v2
@@ -265,7 +207,7 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
     Jalankan screener ADMD dari v1, simpan hasilnya ke screening_results.
     Return DataFrame hasil screening.
     """
-    logger.info(f"[4/5] Jalankan screener ADMD — {trade_date}")
+    logger.info(f"[3/4] Jalankan screener ADMD — {trade_date}")
 
     try:
         from src.signals.screener import run_all
@@ -273,7 +215,7 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
         logger.error("Tidak bisa import screener — pastikan path benar")
         return pd.DataFrame()
 
-    df = run_all(tickers=tickers, use_cache=True, save_output=False, as_of_date=trade_date)
+    df = run_all(tickers=tickers, use_cache=False, save_output=False, as_of_date=trade_date)
     df = _wyckoff_only(df)
     if df.empty:
         logger.warning("       Screener tidak menghasilkan sinyal.")
@@ -297,9 +239,6 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
             trade_date,
             close,
             None,   # volume_ratio — belum ada di v1, akan diisi nanti
-            None,   # ff_net_3d
-            None,   # ff_net_5d
-            None,   # ff_net_20d
             signal, # signal_type (nama asli dari v1)
             min(100, max(0, int(score * 10))),  # normalize 0–10 → 0–100
             phase,
@@ -312,7 +251,6 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
         execute_values(cur, """
             INSERT INTO screening_results
                 (stock_code, screen_date, close_price, volume_ratio,
-                 ff_net_3d, ff_net_5d, ff_net_20d,
                  signal_type, signal_score, phase)
             VALUES %s
             ON CONFLICT (stock_code, screen_date) DO UPDATE SET
@@ -327,7 +265,7 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
 
 
 # =============================================================================
-# STEP 5 — DETEKSI & UPDATE FASE
+# STEP 4 — DETEKSI & UPDATE FASE
 # =============================================================================
 
 def update_phase_history(conn, df_screening: pd.DataFrame, trade_date: date) -> None:
@@ -339,7 +277,7 @@ def update_phase_history(conn, df_screening: pd.DataFrame, trade_date: date) -> 
         (tanggal & harga konsisten).
       - Idempotent: menjalankan ulang tanggal yang sama tidak menggandakan baris.
     """
-    logger.info(f"[5/5] Update phase history — {trade_date}")
+    logger.info(f"[4/4] Update phase history — {trade_date}")
 
     df = _wyckoff_only(df_screening)
     if df.empty:
@@ -472,21 +410,18 @@ def run_pipeline(trade_date: date = None, tickers: list[str] = None) -> bool:
         if n_ohlcv == 0:
             # Libur bursa (atau yfinance gagal): jangan lanjut, kalau tidak sinyal data lama
             # akan tersimpan dengan label tanggal ini.
-            logger.warning(f"OHLCV kosong untuk {trade_date} — step 3-5 di-skip")
+            logger.warning(f"OHLCV kosong untuk {trade_date} — step 3-4 di-skip")
             log_etl_run(
                 conn, trade_date, "full_pipeline", "partial", total=len(tickers),
-                error="OHLCV kosong (libur bursa atau yfinance gagal) — step 3-5 di-skip",
+                error="OHLCV kosong (libur bursa atau yfinance gagal) — step 3-4 di-skip",
                 started_at=started_at,
             )
             return True
 
-        # Step 3 — Foreign flow
-        n_ff = save_foreign_flow(conn, tickers, trade_date)
-
-        # Step 4 — Screener
+        # Step 3 — Screener
         df_result = run_screener_and_save(conn, tickers, trade_date)
 
-        # Step 5 — Phase history
+        # Step 4 — Phase history
         update_phase_history(conn, df_result, trade_date)
 
         # Log sukses
@@ -499,7 +434,6 @@ def run_pipeline(trade_date: date = None, tickers: list[str] = None) -> bool:
         logger.info("=" * 60)
         logger.info(f"ETL PIPELINE SELESAI — {trade_date}")
         logger.info(f"  OHLCV   : {n_ohlcv} saham")
-        logger.info(f"  FF      : {n_ff} saham")
         logger.info(f"  Sinyal  : {len(df_result)} saham")
         logger.info("=" * 60)
         return True

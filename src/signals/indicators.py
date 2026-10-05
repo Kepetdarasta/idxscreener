@@ -2,8 +2,7 @@
 # src/signals/indicators.py — Indikator teknikal bersama
 #
 # Dipakai oleh accumulation.py (Stage 1), markup.py (Stage 2), dan
-# risk_manager.py (Stage 3). Semua berbasis OHLCV murni — tidak ada yang
-# butuh data foreign flow.
+# risk_manager.py (Stage 3). Semua berbasis OHLCV murni.
 # =============================================================================
 
 import pandas as pd
@@ -12,8 +11,7 @@ import pandas as pd
 def obv(df: pd.DataFrame) -> pd.Series:
     """
     On-Balance Volume — volume dikumulatifkan dengan tanda sesuai arah harga.
-    Proxy tekanan beli/jual bersih dari SEMUA pelaku pasar (bukan cuma asing),
-    dipakai sebagai pengganti foreign flow.
+    Proxy tekanan beli/jual bersih dari seluruh pelaku pasar.
     """
     direction = df["Close"].diff().apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
     return (direction * df["Volume"]).cumsum()

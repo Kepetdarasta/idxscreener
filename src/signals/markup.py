@@ -1,7 +1,7 @@
 # =============================================================================
 # src/signals/markup.py — Stage 2: deteksi trigger breakout ("mulai bergerak")
 #
-# VERSI BARU (tanpa foreign flow). Breakout hanya dianggap valid kalau saham
+# Breakout hanya dianggap valid kalau saham
 # tsb SUDAH lolos Stage 1 (accumulation.detect) — supaya breakout yang
 # dihitung memang keluar dari fase akumulasi, bukan breakout acak dari
 # saham yang sedang trending liar tanpa fase konsolidasi.
@@ -28,12 +28,12 @@ from src.signals import indicators, accumulation
 logger = logging.getLogger(__name__)
 
 
-def detect(ohlcv: dict, foreign_flow: pd.DataFrame = None) -> pd.DataFrame:
+def detect(ohlcv: dict) -> pd.DataFrame:
     """
     ohlcv: dict[ticker] -> DataFrame(index=tanggal, columns=[Open,High,Low,Close,Volume])
     Return DataFrame kolom: ticker, close, strength, note, signal ('Mark Up')
     """
-    accumulated = accumulation.detect(ohlcv, foreign_flow)
+    accumulated = accumulation.detect(ohlcv)
     if accumulated.empty:
         return pd.DataFrame()
 

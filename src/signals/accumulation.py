@@ -1,16 +1,12 @@
 # =============================================================================
 # src/signals/accumulation.py — Stage 1: deteksi saham dalam fase akumulasi
 #
-# VERSI BARU (tanpa foreign flow). Kriteria:
+# Kriteria:
 #   1. Volatilitas menyempit  — BB width sekarang ada di persentil rendah
 #      dibanding histori (khas konsolidasi sebelum breakout)
 #   2. OBV naik               — slope positif selama window akumulasi,
-#      proxy tekanan beli bersih (pengganti foreign flow)
+#      proxy tekanan beli bersih
 #   3. Volume dry-up          — opsional, menambah skor strength
-#
-# Signature detect(ohlcv, foreign_flow) dipertahankan supaya kompatibel
-# dengan screener.py (SIGNAL_FUNCS memanggil semua fn dengan argumen sama).
-# foreign_flow tidak lagi dipakai di sini.
 # =============================================================================
 
 import logging
@@ -26,7 +22,7 @@ from src.signals import indicators
 logger = logging.getLogger(__name__)
 
 
-def detect(ohlcv: dict, foreign_flow: pd.DataFrame = None) -> pd.DataFrame:
+def detect(ohlcv: dict) -> pd.DataFrame:
     """
     ohlcv: dict[ticker] -> DataFrame(index=tanggal, columns=[Open,High,Low,Close,Volume])
     Return DataFrame kolom: ticker, close, strength, note, signal ('Akumulasi')
