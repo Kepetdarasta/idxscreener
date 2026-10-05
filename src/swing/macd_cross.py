@@ -3,7 +3,6 @@
 #
 # JALUR SWING (data harian) — TERPISAH dari Wyckoff/ADMD.
 # Didaftarkan di src/swing/swing_screener.py, BUKAN di src/signals/screener.py.
-# Signature detect(ohlcv, foreign_flow=None) -> DataFrame dipertahankan.
 #
 # MACD standar (12, 26, 9):
 #   macd_line   = EMA(12) - EMA(26)
@@ -62,7 +61,7 @@ def _score_strength(hist_today: float, close: float) -> float:
     return round(min(10.0, max(0.0, strength)), 1)
 
 
-def detect(ohlcv: Dict[str, pd.DataFrame], foreign_flow: pd.DataFrame = None) -> pd.DataFrame:
+def detect(ohlcv: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
     Deteksi MACD Bullish Cross (macd_line memotong ke atas signal_line) dan
     Bearish Cross (macd_line memotong ke bawah signal_line) pada hari terakhir.

@@ -211,6 +211,31 @@ COMMENT ON VIEW v_active_phases IS 'Semua saham yang sedang dalam suatu fase (ph
 
 
 -- ============================================================
+-- 7. TABEL SINYAL SWING (MA cross, MACD cross, Swing Setup)
+-- Jalur swing terpisah dari Wyckoff; ditulis oleh etl_swing.py
+-- ============================================================
+CREATE TABLE IF NOT EXISTS swing_signals (
+    id              BIGSERIAL       PRIMARY KEY,
+    stock_code      VARCHAR(10)     NOT NULL REFERENCES stocks(stock_code),
+    signal_date     DATE            NOT NULL,
+    signal_type     VARCHAR(30)     NOT NULL,   -- MA_Golden_Cross, MACD_Bullish_Cross, Swing_Confirmed_Bullish, dst.
+    direction       VARCHAR(10)     NOT NULL,
+    close_price     NUMERIC(14, 2)  NOT NULL,
+    strength        NUMERIC(4, 1),              -- skala 0-10
+    note            TEXT,
+    stop_price      NUMERIC(14, 2),             -- close - 2xATR14 (bullish Swing Setup)
+    target_price    NUMERIC(14, 2),             -- target 2R
+    created_at      TIMESTAMP       NOT NULL DEFAULT NOW(),
+
+    CONSTRAINT uq_swing_stock_date_type UNIQUE (stock_code, signal_date, signal_type),
+    CONSTRAINT chk_swing_direction CHECK (direction IN ('bullish', 'bearish'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_swing_date  ON swing_signals (signal_date);
+CREATE INDEX IF NOT EXISTS idx_swing_stock ON swing_signals (stock_code, signal_date);
+
+
+-- ============================================================
 -- SELESAI
 -- Jalankan script ini di PostgreSQL:
 --   psql -U <user> -d <dbname> -f schema_v2.sql

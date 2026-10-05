@@ -17,7 +17,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import config as cfg
-from src.swing import ma_cross, macd_cross
+from src.swing import ma_cross, macd_cross, swing_setup
 from src.utils.asof import truncate_ohlcv
 
 logger = logging.getLogger(__name__)
@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 SWING_FUNCS = {
     "MA Cross"  : ma_cross.detect,
     "MACD Cross": macd_cross.detect,
+    "Swing Setup": swing_setup.detect,   # gabungan + filter + stop/target ATR
 }
 
 DIRECTION = {
@@ -32,9 +33,12 @@ DIRECTION = {
     ma_cross.SIGNAL_DEATH    : "bearish",
     macd_cross.SIGNAL_BULLISH: "bullish",
     macd_cross.SIGNAL_BEARISH: "bearish",
+    swing_setup.SIGNAL_CONFIRMED: "bullish",
+    swing_setup.SIGNAL_EARLY    : "bullish",
+    swing_setup.SIGNAL_EXIT     : "bearish",
 }
 
-COLUMNS = ["ticker", "signal", "close", "strength", "note", "direction"]
+COLUMNS = ["ticker", "signal", "close", "strength", "note", "direction", "stop_price", "target_price"]
 
 
 @lru_cache(maxsize=2)
@@ -101,7 +105,8 @@ def run_swing(
 ) -> pd.DataFrame:
     """
     Jalankan MA cross + MACD cross.
-    Return DataFrame: ticker, signal, close, strength (0-10), note, direction.
+    Return DataFrame: ticker, signal, close, strength (0-10), note, direction,
+    stop_price, target_price (kedua kolom terakhir hanya terisi untuk sinyal bullish Swing Setup).
     """
     tickers = tickers or cfg.DEFAULT_UNIVERSE
     if ohlcv is None:
@@ -110,19 +115,27 @@ def run_swing(
         logger.warning("Swing: tidak ada data OHLCV.")
         return pd.DataFrame(columns=COLUMNS)
 
-    results = []
+    results, errors = [], []
     for name, fn in SWING_FUNCS.items():
         try:
-            r = fn(ohlcv, None)
+            r = fn(ohlcv)
             if not r.empty:
                 results.append(r)
         except Exception as e:
+            errors.append(f"{name}: {e}")
             logger.error(f"  ✗ {name}: {e}")
+
+    # Semua detektor error = kegagalan, bukan "tidak ada sinyal" (supaya ETL tidak mencatat success)
+    if errors and len(errors) == len(SWING_FUNCS):
+        raise RuntimeError("Semua detektor swing gagal — " + "; ".join(errors))
 
     if not results:
         return pd.DataFrame(columns=COLUMNS)
 
     df = pd.concat(results, ignore_index=True)
+    for col in ('stop_price', 'target_price'):
+        if col not in df.columns:
+            df[col] = None
     df["direction"] = df["signal"].map(DIRECTION)
     return (
         df.sort_values(["signal", "strength"], ascending=[True, False])

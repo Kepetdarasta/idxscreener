@@ -23,12 +23,18 @@ logger = logging.getLogger(__name__)
 PROCESS_NAME = "swing_signals"
 
 
+def _num(v):
+    """NaN/None -> None (NULL di database), selain itu float."""
+    return None if v is None or pd.isna(v) else float(v)
+
+
 def save_swing_signals(conn, df: pd.DataFrame, trade_date: date) -> int:
     """Ganti seluruh sinyal swing pada trade_date (idempotent: re-run tidak menyisakan sinyal usang)."""
     rows = [
         (
             str(r["ticker"]).upper(), trade_date, r["signal"], r["direction"],
             float(r["close"]), float(r["strength"]), str(r.get("note", "")),
+            _num(r.get("stop_price")), _num(r.get("target_price")),
         )
         for _, r in df.iterrows()
     ]
@@ -37,7 +43,8 @@ def save_swing_signals(conn, df: pd.DataFrame, trade_date: date) -> int:
         if rows:
             execute_values(cur, """
                 INSERT INTO swing_signals
-                    (stock_code, signal_date, signal_type, direction, close_price, strength, note)
+                    (stock_code, signal_date, signal_type, direction, close_price, strength, note,
+                     stop_price, target_price)
                 VALUES %s
             """, rows)
     conn.commit()

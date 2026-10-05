@@ -3,12 +3,9 @@
 #
 # JALUR SWING (data harian) — TERPISAH dari Wyckoff/ADMD.
 # Didaftarkan di src/swing/swing_screener.py, BUKAN di src/signals/screener.py.
-# Signature detect(ohlcv, foreign_flow=None) -> DataFrame dipertahankan.
 #
 # ohlcv    : dict[ticker] -> DataFrame dengan kolom Open, High, Low, Close, Volume
 #            (index atau kolom tanggal terurut naik)
-# foreign_flow : tidak dipakai di sini, tapi tetap diterima agar signature
-#                konsisten dengan sinyal ADMD lain (dipanggil seragam oleh screener).
 # =============================================================================
 
 import logging
@@ -49,7 +46,7 @@ def _score_strength(gap_pct: float) -> float:
     return round(min(10.0, max(0.0, strength)), 1)
 
 
-def detect(ohlcv: Dict[str, pd.DataFrame], foreign_flow: pd.DataFrame = None) -> pd.DataFrame:
+def detect(ohlcv: Dict[str, pd.DataFrame]) -> pd.DataFrame:
     """
     Deteksi Golden Cross (MA fast memotong ke atas MA slow) dan
     Death Cross (MA fast memotong ke bawah MA slow) pada hari terakhir data.
