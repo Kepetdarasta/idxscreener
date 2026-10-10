@@ -201,6 +201,16 @@ def _wyckoff_only(df: pd.DataFrame) -> pd.DataFrame:
            .reset_index(drop=True)
     )
 
+# Prioritas fase bila satu saham muncul di beberapa sinyal pada hari yang sama
+PHASE_PRIORITY = {"Mark Down": 4, "Mark Up": 3, "Distribusi": 2, "Akumulasi": 1}
+
+def one_signal_per_ticker(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    d = df.copy()
+    d["_prio"] = d["signal"].map(PHASE_PRIORITY).fillna(0)
+    d = d.sort_values(["ticker", "_prio", "strength"], ascending=[True, False, False])
+    return d.drop_duplicates("ticker", keep="first").drop(columns="_prio").reset_index(drop=True)
 
 def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.DataFrame:
     """
@@ -216,6 +226,7 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
         return pd.DataFrame()
 
     df = run_all(tickers=tickers, use_cache=False, save_output=False, as_of_date=trade_date)
+    df = one_signal_per_ticker(df)    
     df = _wyckoff_only(df)
     if df.empty:
         logger.warning("       Screener tidak menghasilkan sinyal.")

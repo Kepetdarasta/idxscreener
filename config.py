@@ -40,7 +40,7 @@ UNIVERSE_WATCHLIST_PATH = DATA_UNIVERSE_DIR / "custom_watchlist.csv"
 
 # Yahoo Finance
 YFINANCE_SUFFIX  = ".JK"          # suffix ticker IDX di Yahoo Finance
-YFINANCE_PERIOD  = "60d"          # periode download default (60 hari)
+YFINANCE_PERIOD  = "6mo"          # periode download default (6 bulan)
 YFINANCE_INTERVAL = "1d"          # interval: 1d = harian
 YFINANCE_BATCH_SIZE = 20          # max ticker per request (hindari rate limit)
 
