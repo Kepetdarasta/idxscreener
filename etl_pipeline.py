@@ -62,23 +62,58 @@ def get_conn():
 # STEP 1 — SYNC MASTER SAHAM
 # =============================================================================
 
+STOCK_MASTER_CSV = ROOT / "data" / "universe" / "stocks_master.csv"
+
+def _load_stock_master() -> dict:
+    """Baca nama & sektor dari CSV. Return {kode: (nama, sektor, subsektor)}."""
+    if not STOCK_MASTER_CSV.exists():
+        logger.warning(f"       {STOCK_MASTER_CSV} tidak ditemukan — nama saham diisi kode.")
+        return {}
+    df = pd.read_csv(STOCK_MASTER_CSV, dtype=str).fillna("")
+    master = {}
+    for _, r in df.iterrows():
+        code = r["stock_code"].strip().upper()
+        if code:
+            master[code] = (
+                r["stock_name"].strip() or code,
+                r["sector"].strip() or None,
+                r["subsector"].strip() or None,
+            )
+    return master
+
+
 def sync_stocks(conn, tickers: list[str]) -> None:
     """
-    Insert ticker baru ke tabel stocks.
-    Ticker yang sudah ada di-skip (ON CONFLICT DO NOTHING).
+    Upsert ticker ke tabel stocks dengan nama & sektor dari stocks_master.csv.
+    Ticker yang tidak ada di CSV tetap masuk (nama = kode) dan tidak menimpa
+    nama/sektor yang sudah terisi sebelumnya.
     """
     logger.info(f"[1/4] Sync master saham — {len(tickers)} ticker")
-    rows = [(t.upper(), t.upper(), None, None, True) for t in tickers]
+    master = _load_stock_master()
+
+    rows = []
+    for t in tickers:
+        code = t.upper()
+        name, sector, sub = master.get(code, (code, None, None))
+        rows.append((code, name, sector, sub, True))
+
+    missing = [t.upper() for t in tickers if t.upper() not in master]
+    if missing:
+        logger.warning(f"       {len(missing)} ticker belum ada di stocks_master.csv: {missing}")
 
     with conn.cursor() as cur:
         execute_values(cur, """
             INSERT INTO stocks (stock_code, stock_name, sector, subsector, is_active)
             VALUES %s
-            ON CONFLICT (stock_code) DO NOTHING
+            ON CONFLICT (stock_code) DO UPDATE SET
+                stock_name = CASE WHEN EXCLUDED.stock_name = EXCLUDED.stock_code
+                                  THEN stocks.stock_name ELSE EXCLUDED.stock_name END,
+                sector     = COALESCE(EXCLUDED.sector, stocks.sector),
+                subsector  = COALESCE(EXCLUDED.subsector, stocks.subsector),
+                updated_at = NOW()
         """, rows)
     conn.commit()
-    logger.info(f"       Sync selesai.")
-
+    logger.info("       Sync selesai.")
 
 # =============================================================================
 # STEP 2 — FETCH & SIMPAN OHLCV

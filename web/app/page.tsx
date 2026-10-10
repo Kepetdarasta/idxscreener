@@ -40,12 +40,13 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ p
       ) : (
         <div className="scroll">
           <table>
-            <thead><tr><th>Kode</th><th>Nama</th><th>Fase</th><th className="num">Penutupan</th><th className="num">Skor</th><th className="num">RR</th></tr></thead>
+            <thead><tr><th>Kode</th><th>Nama</th><th>Sektor</th><th>Fase</th><th className="num">Penutupan</th><th className="num">Skor</th><th className="num">RR</th></tr></thead>
             <tbody>
               {rows.map((r) => (
                 <tr key={r.stock_code}>
                   <td><Link href={`/stocks/${r.stock_code}`}><b>{r.stock_code}</b></Link></td>
                   <td>{r.stock_name}</td>
+                  <td>{r.sector ?? "–"}</td>
                   <td><i className="dot" style={{ background: phaseOf(r.phase).color }} />{phaseOf(r.phase).label}</td>
                   <td className="num">{Number(r.close_price).toLocaleString("id-ID")}</td>
                   <td className="num">{r.signal_score}</td>
