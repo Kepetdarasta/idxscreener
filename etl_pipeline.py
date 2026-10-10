@@ -212,6 +212,10 @@ def one_signal_per_ticker(df: pd.DataFrame) -> pd.DataFrame:
     d = d.sort_values(["ticker", "_prio", "strength"], ascending=[True, False, False])
     return d.drop_duplicates("ticker", keep="first").drop(columns="_prio").reset_index(drop=True)
 
+def _num(v):
+    """NaN/None -> None (NULL di database), selain itu float."""
+    return None if v is None or pd.isna(v) else float(v)
+
 def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.DataFrame:
     """
     Jalankan screener ADMD dari v1, simpan hasilnya ke screening_results.
@@ -253,6 +257,12 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
             signal, # signal_type (nama asli dari v1)
             min(100, max(0, int(score * 10))),  # normalize 0–10 → 0–100
             phase,
+            _num(row.get("range_high")),
+            _num(row.get("range_low")),
+            _num(row.get("entry_price")),
+            _num(row.get("stop_loss")),
+            _num(row.get("target_price")),
+            _num(row.get("risk_reward_ratio")),
         ))
 
     if not rows:
@@ -261,14 +271,20 @@ def run_screener_and_save(conn, tickers: list[str], trade_date: date) -> pd.Data
     with conn.cursor() as cur:
         execute_values(cur, """
             INSERT INTO screening_results
-                (stock_code, screen_date, close_price, volume_ratio,
-                 signal_type, signal_score, phase)
+                (stock_code, screen_date, close_price, volume_ratio, signal_type, signal_score, phase,
+                 range_high, range_low, entry_price, stop_loss,target_price, risk_reward_ratio)
             VALUES %s
             ON CONFLICT (stock_code, screen_date) DO UPDATE SET
                 close_price  = EXCLUDED.close_price,
                 signal_type  = EXCLUDED.signal_type,
                 signal_score = EXCLUDED.signal_score,
-                phase        = EXCLUDED.phase
+                phase             = EXCLUDED.phase,
+                range_high        = EXCLUDED.range_high,
+                range_low         = EXCLUDED.range_low,
+                entry_price       = EXCLUDED.entry_price,
+                stop_loss         = EXCLUDED.stop_loss,
+                target_price      = EXCLUDED.target_price,
+                risk_reward_ratio = EXCLUDED.risk_reward_ratio
         """, rows)
     conn.commit()
     logger.info(f"       Screening results tersimpan: {len(rows)} baris")

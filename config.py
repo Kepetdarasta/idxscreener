@@ -79,6 +79,12 @@ MARKDOWN_PRICE_DROP_MIN  = -0.05           # harga turun minimal 5% dalam 3 hari
 MARKDOWN_PRICE_WINDOW    = 3
 MARKDOWN_VOLUME_RATIO_MIN = 1.2            # volume di atas rata-rata (konfirmasi)
 
+# --- STAGE 3: TRADE SETUP (hanya untuk sinyal Mark Up) ---
+STAGE3_RANGE_LOOKBACK_DAYS = 20    # tinggi range diukur dari N hari sebelum breakout
+STAGE3_ATR_PERIOD          = 14
+STAGE3_ATR_STOP_MULTIPLIER = 1.0   # stop = resistance yang ditembus - 1x ATR
+STAGE3_MIN_RISK_REWARD     = 1.2   # Mark Up dengan RR di bawah ini diturunkan jadi Akumulasi
+
 # =============================================================================
 # PARAMETER SWING — MA CROSS & MACD CROSS (data harian)
 # TERPISAH dari Wyckoff/ADMD: tabel, ETL, dan tab dashboard sendiri.

@@ -14,7 +14,7 @@ import pandas as pd
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import config as cfg
-from src.signals import accumulation, distribution, markup, markdown
+from src.signals import accumulation, distribution, markup, markdown, risk_manager
 from src.utils.asof import truncate_ohlcv
 
 logger = logging.getLogger(__name__)
@@ -81,6 +81,12 @@ def run_all(
         .sort_values(["signal", "strength"], ascending=[True, False])
         .reset_index(drop=True)
     )
+
+    # Stage 3: trade setup untuk Mark Up (Mark Up dengan RR rendah dibuang dari hasil)
+    try:
+        combined = risk_manager.attach_trade_setup(combined, ohlcv)
+    except Exception as e:
+        logger.error(f"  ✗ Stage 3 trade setup: {e}")
 
     if save_output:
         cfg.DATA_PROCESSED_DIR.mkdir(parents=True, exist_ok=True)

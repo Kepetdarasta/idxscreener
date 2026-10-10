@@ -3,7 +3,7 @@
 #
 # Dipanggil setelah Stage 2 (breakout/"Mark Up") terdeteksi di screener.
 # Menghitung entry, stop loss, target, dan risk:reward ratio berbasis
-# tinggi range akumulasi + ATR — tanpa perlu data foreign flow.
+# tinggi range akumulasi + ATR (stop di bawah resistance yang ditembus).
 #
 # ASUMSI STRUKTUR DATA:
 #   ohlcv adalah dict: { "BBCA": DataFrame(index=tanggal, columns=[Open,High,Low,Close,Volume]), ... }
@@ -42,10 +42,10 @@ def get_ohlcv_for_ticker(ohlcv: Dict[str, pd.DataFrame], ticker: str) -> Optiona
 
 def compute_range(df: pd.DataFrame, lookback_days: int) -> tuple[float, float]:
     """
-    Ambil high tertinggi & low terendah selama `lookback_days` terakhir
-    (window sebelum breakout) — merepresentasikan tinggi range akumulasi.
+    Ambil high tertinggi & low terendah selama `lookback_days` hari SEBELUM
+    hari breakout (hari terakhir dikecualikan) — tinggi range akumulasi.
     """
-    window = df.tail(lookback_days)
+    window = df.iloc[:-1].tail(lookback_days)
     range_high = float(window["High"].max())
     range_low = float(window["Low"].min())
     return range_high, range_low
@@ -91,7 +91,12 @@ def calculate_trade_setup(ticker: str, entry_price: float, df: pd.DataFrame) -> 
     if range_high <= range_low or atr <= 0:
         return None
 
-    stop_loss = range_low - (atr * cfg.STAGE3_ATR_STOP_MULTIPLIER)
+    # Stop = di bawah resistance yang baru ditembus (level yang harus bertahan sebagai
+    # support), dikurangi buffer ATR. Dibatasi tidak lebih rendah dari dasar range.
+    # (Stop di bawah dasar range membuat risk >= tinggi range, sedangkan target hanya
+    #  setinggi range -> RR selalu < 1 dan hampir semua Mark Up terbuang.)
+    resistance = float(df["High"].iloc[-(cfg.MARKUP_BREAKOUT_WINDOW + 1):-1].max())
+    stop_loss = max(resistance - (atr * cfg.STAGE3_ATR_STOP_MULTIPLIER), range_low)
     target_price = entry_price + (range_high - range_low)
 
     risk = entry_price - stop_loss

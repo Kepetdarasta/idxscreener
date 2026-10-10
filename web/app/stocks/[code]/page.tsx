@@ -2,7 +2,10 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { sql } from "@/lib/db";
 import { phaseOf } from "@/lib/phases";
-import PhaseChart, { PhaseBand, PricePoint } from "@/components/PhaseChart";
+import PhaseChart, { PhaseBand, PricePoint, TradeSetup } from "@/components/PhaseChart";
+
+const fmt = (n: number) => n.toLocaleString("id-ID");
+const pct = (a: number, b: number) => { const v = (a / b - 1) * 100; return `${v > 0 ? "+" : ""}${v.toFixed(1)}%`; };
 
 export const revalidate = 900;
 
@@ -38,12 +41,48 @@ export default async function StockPage({ params }: { params: Promise<{ code: st
     if (from && to && from <= to) bands.push({ phase: p.phase, from, to });
   }
 
+  // Trade setup: hanya bila sinyal terbaru saham ini Mark Up dan datanya sama-sama terbaru
+  const latest = await sql`
+    SELECT phase, to_char(screen_date,'YYYY-MM-DD') AS d,
+           entry_price::float AS entry, stop_loss::float AS stop,
+           target_price::float AS target, risk_reward_ratio::float AS rr
+    FROM screening_results WHERE stock_code = ${code}
+    ORDER BY screen_date DESC LIMIT 1`;
+  const sig = latest[0] as
+    | { phase: string; d: string; entry: number | null; stop: number | null; target: number | null; rr: number | null }
+    | undefined;
+  const setup: (TradeSetup & { rr: number; date: string }) | null =
+    sig && sig.phase === "markup" && sig.d === last &&
+    sig.entry != null && sig.stop != null && sig.target != null && sig.rr != null
+      ? { entry: sig.entry, stop: sig.stop, target: sig.target, rr: sig.rr, date: sig.d }
+      : null;
+
   return (
     <main>
       <p><Link href="/">Kembali ke daftar</Link></p>
       <h1>{code} <span className="muted">{stock[0].stock_name}</span></h1>
 
-      {prices.length === 0 ? <p>Belum ada data harga untuk saham ini.</p> : <PhaseChart prices={prices} bands={bands} />}
+      {prices.length === 0 ? <p>Belum ada data harga untuk saham ini.</p> : <PhaseChart prices={prices} bands={bands} setup={setup} />}
+
+      {setup && (
+        <>
+          <h2>Trade setup</h2>
+          <div className="scroll">
+            <table>
+              <thead><tr><th>Entry</th><th>Stop loss</th><th>Target</th><th className="num">Risk : Reward</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td>{fmt(setup.entry)}</td>
+                  <td>{fmt(setup.stop)} ({pct(setup.stop, setup.entry)})</td>
+                  <td>{fmt(setup.target)} ({pct(setup.target, setup.entry)})</td>
+                  <td className="num">1 : {setup.rr.toFixed(2)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <p className="muted">Dihitung otomatis dari harga dan volume penutupan {setup.date}. Bukan rekomendasi investasi.</p>
+        </>
+      )}
 
       <h2>Riwayat fase</h2>
       {phases.length === 0 ? <p>Belum ada fase tercatat.</p> : (

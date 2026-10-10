@@ -6,7 +6,7 @@ export const revalidate = 900; // data baru masuk sekali per hari; cache 15 meni
 
 type Row = {
   stock_code: string; stock_name: string; sector: string | null; screen_date: string;
-  close_price: string; signal_score: number; phase: string;
+  close_price: string; signal_score: number; phase: string; risk_reward_ratio: string | null;
 };
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ phase?: string }> }) {
@@ -15,9 +15,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ p
 
   const rows = (valid
     ? await sql`SELECT stock_code, stock_name, sector, to_char(screen_date,'YYYY-MM-DD') AS screen_date,
-                       close_price, signal_score, phase FROM v_screening_latest WHERE phase = ${valid}`
+                       close_price, signal_score, phase, risk_reward_ratio FROM v_screening_latest WHERE phase = ${valid}`
     : await sql`SELECT stock_code, stock_name, sector, to_char(screen_date,'YYYY-MM-DD') AS screen_date,
-                       close_price, signal_score, phase FROM v_screening_latest`) as Row[];
+                       close_price, signal_score, phase, risk_reward_ratio FROM v_screening_latest`) as Row[];
 
   return (
     <main>
@@ -40,7 +40,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ p
       ) : (
         <div className="scroll">
           <table>
-            <thead><tr><th>Kode</th><th>Nama</th><th>Fase</th><th className="num">Penutupan</th><th className="num">Skor</th></tr></thead>
+            <thead><tr><th>Kode</th><th>Nama</th><th>Fase</th><th className="num">Penutupan</th><th className="num">Skor</th><th className="num">RR</th></tr></thead>
             <tbody>
               {rows.map((r) => (
                 <tr key={r.stock_code}>
@@ -49,6 +49,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ p
                   <td><i className="dot" style={{ background: phaseOf(r.phase).color }} />{phaseOf(r.phase).label}</td>
                   <td className="num">{Number(r.close_price).toLocaleString("id-ID")}</td>
                   <td className="num">{r.signal_score}</td>
+                  <td className="num">{r.risk_reward_ratio ? Number(r.risk_reward_ratio).toFixed(2) : "–"}</td>
                 </tr>
               ))}
             </tbody>
