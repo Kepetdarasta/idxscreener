@@ -16,7 +16,7 @@ export default function PhaseChart({ prices, bands }: { prices: PricePoint[]; ba
         ))}
         <XAxis dataKey="d" tick={{ fontSize: 12 }} minTickGap={40} />
         <YAxis domain={["auto", "auto"]} tick={{ fontSize: 12 }} width={56} />
-        <Tooltip formatter={(v: number) => v.toLocaleString("id-ID")} />
+        <Tooltip formatter={(v) => Number(v).toLocaleString("id-ID")} />
         <Line type="monotone" dataKey="close" stroke="#1d2433" dot={false} strokeWidth={1.8} />
       </LineChart>
     </ResponsiveContainer>
