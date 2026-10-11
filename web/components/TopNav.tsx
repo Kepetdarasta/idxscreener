@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 const TABS = [
   { href: "/", label: "Siklus ADMD" },
   { href: "/all", label: "Semua saham" },
+  { href: "/cross-ma", label: "Cross MA" },
   { href: "/heatmap", label: "Heatmap sektor" },
   { href: "/watchlist", label: "Watchlist" },
 ];
