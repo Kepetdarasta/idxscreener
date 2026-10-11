@@ -204,7 +204,33 @@ def fetch_and_save_ohlcv(conn, tickers: list[str], trade_date: date) -> int:
     logger.info(f"       OHLCV tersimpan: {len(rows)} saham")
     return len(rows)
 
-
+def fetch_and_save_index(conn, code: str = "IHSG", symbol: str = "^JKSE", period: str = "6mo") -> int:
+    """Simpan penutupan harian IHSG ke market_index. Tidak kritis: gagal -> peringatan saja."""
+    try:
+        import yfinance as yf
+        raw = yf.download(symbol, period=period, interval="1d", auto_adjust=True, progress=False)
+        if raw is None or raw.empty:
+            logger.warning(f"       Index {code}: data kosong dari Yahoo")
+            return 0
+        close = raw["Close"]
+        if isinstance(close, pd.DataFrame):      # yfinance baru: kolom MultiIndex
+            close = close.iloc[:, 0]
+        close = close.dropna()
+        rows = [(code, d.date(), float(v)) for d, v in close.items()]
+        with conn.cursor() as cur:
+            execute_values(cur, """
+                INSERT INTO market_index (index_code, trade_date, close_price)
+                VALUES %s
+                ON CONFLICT (index_code, trade_date) DO UPDATE SET close_price = EXCLUDED.close_price
+            """, rows)
+        conn.commit()
+        logger.info(f"       Index {code}: {len(rows)} hari tersimpan")
+        return len(rows)
+    except Exception as e:
+        conn.rollback()
+        logger.warning(f"       Index {code}: dilewati — {e}")
+        return 0
+    
 # =============================================================================
 # STEP 3 — JALANKAN SCREENER & SIMPAN HASIL
 # =============================================================================
@@ -469,6 +495,7 @@ def run_pipeline(trade_date: date = None, tickers: list[str] = None) -> bool:
 
         # Step 2 — OHLCV
         n_ohlcv = fetch_and_save_ohlcv(conn, tickers, trade_date)
+        fetch_and_save_index(conn)  # IHSG (tidak kritis)
         if n_ohlcv == 0:
             # Libur bursa (atau yfinance gagal): jangan lanjut, kalau tidak sinyal data lama
             # akan tersimpan dengan label tanggal ini.

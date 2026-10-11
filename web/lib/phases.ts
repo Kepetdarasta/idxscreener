@@ -1,10 +1,11 @@
 export const PHASES = {
-  accumulation: { label: "Akumulasi", color: "#2f8f5b" },
-  markup: { label: "Mark Up", color: "#2f6fb5" },
-  distribution: { label: "Distribusi", color: "#d9822b" },
-  markdown: { label: "Mark Down", color: "#c0392b" },
-  unknown: { label: "Belum jelas", color: "#8a8f98" },
+  accumulation: { label: "Akumulasi", color: "#3fb97f" },
+  markup: { label: "Mark Up", color: "#4a9eff" },
+  distribution: { label: "Distribusi", color: "#e89a3c" },
+  markdown: { label: "Mark Down", color: "#e5564b" },
+  unknown: { label: "Belum jelas", color: "#7c8aa0" },
 } as const;
 
 export type PhaseKey = keyof typeof PHASES;
-export const phaseOf = (p: string) => PHASES[p as PhaseKey] ?? PHASES.unknown;
+export const PHASE_ORDER = ["accumulation", "markup", "distribution", "markdown"] as const;
+export const phaseOf = (p: string | null | undefined) => PHASES[(p ?? "") as PhaseKey] ?? PHASES.unknown;
