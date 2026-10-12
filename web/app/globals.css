@@ -95,3 +95,22 @@ main > h2 { margin:30px 0 12px; font-size:1.15rem; }
 .tag { display:inline-block; padding:2px 10px; border-radius:999px; font-size:.78rem; background:var(--panel2); border:1px solid var(--line); white-space:normal; }
 .tag.warn { color:#e8c15c; border-color:#6b5a2a; } .tag.ok { color:var(--pos); border-color:#245a40; }
 code { background:var(--panel2); padding:1px 6px; border-radius:4px; font-size:.9em; }
+
+/* kombinasi */
+a.card { text-decoration:none; color:inherit; }
+a.card:hover { border-color:var(--muted); }
+a.card.on { border-color:var(--ink); background:var(--panel2); }
+td.note { white-space:normal; min-width:260px; max-width:420px; color:var(--muted); font-size:.88rem; }
+
+/* panduan */
+main.guide { max-width:900px; }
+.toc { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 22px; }
+.toc a.chip { text-decoration:none; }
+.guide-sec { margin-top:40px; scroll-margin-top:16px; }
+.guide-sec h2 { font-size:1.35rem; margin:0 0 12px; }
+.guide-sec h3 { display:block; font-size:1.02rem; margin:26px 0 8px; }
+.guide p, .guide li { max-width:78ch; }
+.guide ul, .guide ol { padding-left:1.3rem; display:grid; gap:7px; margin:8px 0 12px; }
+.guide td.wrap { white-space:normal; min-width:240px; line-height:1.5; }
+.callout { background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--muted); border-radius:6px; padding:2px 16px; margin:16px 0; }
+.callout.warn { border-left-color:#e8c15c; }

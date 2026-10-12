@@ -93,6 +93,8 @@ STAGE3_MIN_RISK_REWARD     = 1.2   # Mark Up dengan RR di bawah ini diturunkan j
 # Histori yfinance khusus swing. MACD(12,26,9) butuh >= 45 hari bursa, sedangkan
 # YFINANCE_PERIOD="60d" (~42-45 hari bursa) tidak cukup -> pakai periode lebih panjang.
 SWING_HISTORY_PERIOD = "9mo"
+SWING_TRACK_PERIOD   = "2y"   # histori untuk melacak posisi cross (lebih panjang = statistik lebih berarti)
+SWING_CONFIRM_WINDOW = 10     # jarak maksimal (hari bursa) antara MA cross dan MACD cross
 
 MA_CROSS_FAST = 5      # MA cepat
 MA_CROSS_SLOW = 20     # MA lambat

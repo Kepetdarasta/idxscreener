@@ -6,8 +6,10 @@ const TABS = [
   { href: "/", label: "Siklus ADMD" },
   { href: "/all", label: "Semua saham" },
   { href: "/cross-ma", label: "Cross MA" },
+  { href: "/kombinasi", label: "Kombinasi" },
   { href: "/heatmap", label: "Heatmap sektor" },
   { href: "/watchlist", label: "Watchlist" },
+  { href: "/panduan", label: "Panduan" },
 ];
 
 export default function TopNav() {

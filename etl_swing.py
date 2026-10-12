@@ -51,6 +51,46 @@ def save_swing_signals(conn, df: pd.DataFrame, trade_date: date) -> int:
     return len(rows)
 
 
+def _py(v):
+    """Tipe NumPy -> tipe Python murni (NumPy 2.x membuat psycopg2 menulis 'np.float64(...)' ke SQL)."""
+    return v.item() if hasattr(v, "item") else v
+
+
+def save_swing_trades(conn, rows: list, as_of: date) -> int:
+    """Hitung-ulang-penuh: ganti seluruh isi swing_trades dalam satu transaksi."""
+    cols = ("ticker", "status", "entry_date", "entry_price", "exit_date", "exit_price",
+            "last_date", "last_price", "return_pct", "days_held", "worst_pct", "warning",
+            "ma_cross_date", "macd_cross_date")
+    tuples = [tuple(_py(r[c]) for c in cols) + (as_of,) for r in rows]
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM swing_trades")
+        if tuples:
+            execute_values(cur, """
+                INSERT INTO swing_trades
+                    (stock_code, status, entry_date, entry_price, exit_date, exit_price,
+                     last_date, last_price, return_pct, days_held, worst_pct, warning,
+                     ma_cross_date, macd_cross_date, as_of)
+                VALUES %s
+            """, tuples)
+    conn.commit()
+    return len(tuples)
+
+
+def update_trend_tracker(conn, tickers: list, trade_date: date) -> int:
+    """Lacak posisi MA5/MA20 + MACD dari histori panjang (SWING_TRACK_PERIOD) s.d. trade_date."""
+    import config as cfg
+    from src.data_fetcher.yfinance_fetcher import fetch_ohlcv
+    from src.swing.trend_tracker import track_all
+    from src.utils.asof import truncate_ohlcv
+
+    ohlcv = fetch_ohlcv(tickers, period=getattr(cfg, "SWING_TRACK_PERIOD", "2y"), use_cache=False)
+    ohlcv = truncate_ohlcv(ohlcv, trade_date) if ohlcv else {}
+    if not ohlcv:
+        logger.warning("Tracker posisi: tidak ada data harga — tabel swing_trades dibiarkan apa adanya")
+        return 0
+    return save_swing_trades(conn, track_all(ohlcv), trade_date)
+
+
 def run_swing_pipeline(trade_date: date = None, tickers: list = None) -> bool:
     from src.swing.swing_screener import load_history, run_swing
 
@@ -84,6 +124,14 @@ def run_swing_pipeline(trade_date: date = None, tickers: list = None) -> bool:
 
         df = run_swing(tickers, as_of_date=trade_date, ohlcv=ohlcv)
         n = save_swing_signals(conn, df, trade_date)
+
+        # Pelacak posisi (tahan sampai MA cross down + MACD dead cross) — kegagalan tidak membatalkan sinyal harian
+        try:
+            n_pos = update_trend_tracker(conn, tickers, trade_date)
+            logger.info(f"Tracker posisi swing: {n_pos} baris")
+        except Exception as e:
+            conn.rollback()
+            logger.warning(f"Tracker posisi swing dilewati: {e}")
 
         log_etl_run(conn, trade_date, PROCESS_NAME, "success",
                     total=len(ohlcv), success=n, started_at=started_at)
