@@ -33,7 +33,7 @@ export default async function Kombinasi({ searchParams }: { searchParams: Promis
       <h1>Kombinasi</h1>
       <p className="muted lead">
         Menyandingkan dua sistem: fase siklus (ADMD) dan posisi swing MA5/MA20 + MACD{screenDate ? ` · penutupan ${screenDate}` : ""}.
-        Saham yang kedua sistemnya searah punya dukungan lebih kuat daripada yang hanya lolos salah satu.
+        Saham yang kedua sistemnya searah sejalan secara indikator; belum diuji apakah itu memperbaiki hasil.
       </p>
 
       <div className="cards">

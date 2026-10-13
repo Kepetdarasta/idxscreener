@@ -30,7 +30,7 @@ export default function Panduan() {
       </nav>
 
       <div className="callout warn">
-        <p><b>Penting.</b> Panduan ini menjelaskan cara kerja alat dan aturan yang dipakainya. Isinya bukan saran investasi. Sinyal dihitung otomatis dari harga dan volume, belum diuji akurasinya secara historis, dan keputusan beserta risikonya tetap ada pada Anda.</p>
+        <p><b>Penting.</b> Panduan ini menjelaskan cara kerja alat dan aturan yang dipakainya. Isinya bukan saran investasi. Sinyal dihitung otomatis dari harga dan volume. ADMD dan Kombinasi belum diuji akurasinya secara historis, sedangkan aturan Cross MA yang sudah diuji tidak menunjukkan keuntungan rata-rata (lihat bagian Cross MA). Keputusan beserta risikonya tetap ada pada Anda.</p>
       </div>
 
       {/* ───────────────────────── RINGKASAN ───────────────────────── */}
@@ -41,7 +41,7 @@ export default function Panduan() {
           <thead><tr><th>Tab</th><th>Pertanyaan yang dijawab</th><th>Horizon</th></tr></thead>
           <tbody>
             <tr><td><b>Siklus ADMD</b></td><td>Saham ini sedang berada di fase apa?</td><td>Menengah hingga panjang (pekan sampai bulan)</td></tr>
-            <tr><td><b>Cross MA</b></td><td>Kapan masuk, dan sampai kapan ditahan?</td><td>Swing (pekan)</td></tr>
+            <tr><td><b>Cross MA</b></td><td>Apa status posisi swing menurut aturan MA dan MACD (masuk, hold, atau keluar)?</td><td>Swing (pekan)</td></tr>
             <tr><td><b>Kombinasi</b></td><td>Apakah kedua sistem berjalan searah?</td><td>Penyaring gabungan</td></tr>
           </tbody>
         </table></div>
@@ -125,14 +125,33 @@ export default function Panduan() {
         <ul>
           <li><b>Tidak ada stop loss</b> dalam aturan ini. Kolom <b>Terdalam</b> menunjukkan penurunan terdalam dari harga masuk selama posisi dipegang, supaya risikonya terlihat.</li>
           <li><b>Rawan sinyal palsu saat harga sideways.</b> Persilangan MA dan MACD sering muncul bolak-balik pada harga yang bergerak mendatar, sehingga posisi bisa cepat terbuka dan tertutup dengan hasil kecil atau rugi.</li>
-          <li>Harga masuk dan keluar pada statistik riwayat adalah penutupan hari sinyal, tanpa biaya transaksi. Pada praktiknya Anda bertransaksi keesokan harinya, dengan harga yang bisa berbeda.</li>
+          <li>Harga masuk dan keluar pada statistik riwayat di tab Cross MA adalah penutupan hari sinyal, tanpa biaya transaksi. Pada praktiknya Anda bertransaksi keesokan harinya, dengan harga yang bisa berbeda.</li>
         </ul>
+
+        <h3>Hasil uji historis</h3>
+        <p>Aturan ini diuji pada 45 saham LQ45 selama sekitar 5 tahun, dengan biaya transaksi 0,4% per putaran dan eksekusi di harga buka hari berikutnya. Data dibagi dua: bagian awal (sekitar 3 tahun) untuk memilih pengaturan, bagian akhir (sekitar 2 tahun) sebagai ujian.</p>
+        <div className="scroll"><table>
+          <thead><tr><th>Periode</th><th className="num">Jumlah posisi</th><th className="num">Menguntungkan</th><th className="num">Rata-rata per posisi</th><th className="num">Profit factor</th></tr></thead>
+          <tbody>
+            <tr><td>Awal</td><td className="num">838</td><td className="num">31%</td><td className="num neg">−0,43%</td><td className="num">0,86</td></tr>
+            <tr><td>Akhir (ujian)</td><td className="num">541</td><td className="num">31%</td><td className="num neg">−0,36%</td><td className="num">0,91</td></tr>
+          </tbody>
+        </table></div>
+        <div className="callout warn">
+          <p><b>Hasilnya tidak menunjukkan keunggulan.</b> Dari 64 variasi pengaturan yang diuji (jendela konfirmasi, aturan keluar, stop loss, dan filter sideways), tidak ada satu pun yang menghasilkan rata-rata per posisi positif setelah biaya, baik di periode awal maupun di periode ujian. Profit factor di bawah 1 berarti total keuntungan lebih kecil daripada total kerugian.</p>
+        </div>
+        <ul>
+          <li>Hanya sekitar 31% posisi yang menguntungkan, dan median posisi rugi sekitar 3,3%. Keuntungan dari posisi yang berhasil tidak cukup menutup kerugian dari posisi lainnya.</li>
+          <li>Pada periode awal, saham yang sama bila hanya ditahan naik rata-rata sekitar 23,6%, sedangkan hasil gabungan strategi sekitar −8,4%. Pada periode akhir, ketika harga turun rata-rata sekitar 12,9%, strategi turun sekitar 6,3%. Hasil yang lebih kecil itu terutama karena strategi lebih sering berada di luar pasar, bukan karena sinyalnya tepat.</li>
+          <li>Filter &ldquo;hanya masuk bila MA20 sedang naik&rdquo; justru memperburuk hasil. Stop loss tidak membantu, dan jendela konfirmasi hanya memberi selisih kecil.</li>
+        </ul>
+        <p>Karena itu, persilangan MA{C.maFast}/MA{C.maSlow} yang dikonfirmasi MACD sebaiknya dibaca sebagai <b>penanda status tren</b>, bukan sebagai pemicu beli yang berdiri sendiri. Hasil ini berlaku untuk saham, periode, dan asumsi biaya di atas. Pengujian memakai anggota LQ45 yang berlaku sekarang (saham yang dulu keluar dari indeks tidak ikut diuji), dan hasil historis tidak menjamin hasil ke depan.</p>
       </section>
 
       {/* ───────────────────────── KOMBINASI ───────────────────────── */}
       <section id="kombinasi" className="guide-sec">
         <h2>Kombinasi</h2>
-        <p>Tab ini menyandingkan fase ADMD hari ini dengan posisi swing yang sedang berjalan. Saham yang kedua sistemnya searah punya dukungan lebih banyak daripada yang hanya lolos salah satu.</p>
+        <p>Tab ini menyandingkan fase ADMD hari ini dengan posisi swing yang sedang berjalan. Saham yang kedua sistemnya searah sejalan secara indikator, tetapi belum terbukti lebih baik daripada yang hanya lolos salah satu.</p>
         <div className="scroll"><table>
           <thead><tr><th>Kategori</th><th>Syarat</th></tr></thead>
           <tbody>
@@ -143,12 +162,16 @@ export default function Panduan() {
           </tbody>
         </table></div>
         <p className="muted">Saham di luar keempat kategori ini tidak ditampilkan. Daftar yang pendek adalah hal yang wajar, karena fungsi tab ini memang menyaring.</p>
+        <p>Kombinasi belum diuji secara historis. Belum terbukti bahwa menyaring posisi swing dengan fase ADMD memperbaiki hasil, jadi baca kategori &ldquo;Selaras kuat&rdquo; sebagai kesesuaian dua indikator, bukan sebagai jaminan.</p>
       </section>
 
       {/* ───────────────────────── STRATEGI ───────────────────────── */}
       <section id="strategi" className="guide-sec">
         <h2>Strategi: masuk, hold, keluar</h2>
         <p>Bagian ini merangkum aturan yang dipakai alat untuk strategi swing jangka menengah, ditambah hal yang bisa dipertimbangkan saat memakai tab Kombinasi sebagai penyaring.</p>
+        <div className="callout warn">
+          <p><b>Baca dulu hasil ujinya.</b> Aturan masuk, hold, dan keluar di bawah ini adalah aturan yang dijalankan alat. Pengujian historis (bagian Cross MA) menunjukkan aturan ini belum terbukti menguntungkan di saham LQ45 setelah biaya. Jangan membaca bagian ini sebagai jaminan bahwa mengikutinya akan menghasilkan keuntungan.</p>
+        </div>
 
         <h3>Masuk</h3>
         <p><b>Aturan alat:</b> MA{C.maFast} cross up MA{C.maSlow} dan MACD golden cross dalam {C.confirmWindow} hari bursa. Saat itu terjadi, saham muncul di <b>Sedang di-hold</b> pada tab Cross MA.</p>
@@ -224,7 +247,8 @@ export default function Panduan() {
       <section id="batasan" className="guide-sec">
         <h2>Batasan</h2>
         <ul>
-          <li><b>Akurasi belum teruji.</b> Belum ada backtest yang membuktikan bahwa sinyal ADMD atau kategori Kombinasi lebih sering benar daripada saham biasa. Statistik riwayat di tab Cross MA berasal dari simulasi aturan pada data yang tersedia, dan hasil historis tidak menjamin hasil ke depan.</li>
+          <li><b>ADMD dan Kombinasi belum teruji.</b> Belum ada backtest yang membuktikan bahwa sinyal ADMD atau kategori Kombinasi lebih sering benar daripada saham biasa.</li>
+          <li><b>Cross MA sudah diuji, dan hasilnya negatif.</b> Pada 64 variasi pengaturan, tidak ada yang menghasilkan rata-rata per posisi positif setelah biaya (lihat bagian Cross MA). Hasil historis tidak menjamin hasil ke depan.</li>
           <li><b>Cakupan terbatas.</b> Hanya 45 saham LQ45 yang disaring, memakai daftar anggota yang berlaku sekarang.</li>
           <li><b>Kualitas data.</b> Data dari Yahoo Finance bisa terlambat atau keliru, dan tidak menandai suspensi atau aksi korporasi.</li>
           <li><b>Hanya harga dan volume.</b> Tidak ada data fundamental, berita, ataupun aktivitas investor asing.</li>

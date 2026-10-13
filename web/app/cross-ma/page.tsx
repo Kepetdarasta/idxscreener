@@ -49,6 +49,7 @@ export default async function CrossMA() {
       <div className="rule">
         <p><b>Beli</b> saat MA5 menembus MA20 ke atas dan MACD golden cross terjadi berdekatan (dalam jendela hari bursa yang ditetapkan). Harga acuan adalah penutupan hari konfirmasi.</p>
         <p><b>Tahan</b> sampai MA5 berada di bawah MA20 <em>dan</em> MACD dead cross sama-sama terjadi setelah tanggal beli. Aturan ini tidak memakai stop loss, jadi lihat kolom &ldquo;Terdalam&rdquo; untuk mengetahui seberapa dalam harga pernah turun selama posisi dipegang.</p>
+        <p>Pengujian historis aturan ini tidak menunjukkan keuntungan rata-rata per posisi setelah biaya. Baca status di bawah sebagai penanda tren, bukan sinyal beli yang berdiri sendiri. Rinciannya ada di <Link href="/panduan#cross">Panduan</Link>.</p>
       </div>
 
       <div className="cards">
