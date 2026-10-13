@@ -133,17 +133,17 @@ export default function Panduan() {
         <div className="scroll"><table>
           <thead><tr><th>Periode</th><th className="num">Jumlah posisi</th><th className="num">Menguntungkan</th><th className="num">Rata-rata per posisi</th><th className="num">Profit factor</th></tr></thead>
           <tbody>
-            <tr><td>Awal</td><td className="num">838</td><td className="num">31%</td><td className="num neg">−0,43%</td><td className="num">0,86</td></tr>
-            <tr><td>Akhir (ujian)</td><td className="num">541</td><td className="num">31%</td><td className="num neg">−0,36%</td><td className="num">0,91</td></tr>
+            <tr><td>Awal</td><td className="num">837</td><td className="num">31%</td><td className="num neg">−0,44%</td><td className="num">0,86</td></tr>
+            <tr><td>Akhir (ujian)</td><td className="num">536</td><td className="num">32%</td><td className="num neg">−0,38%</td><td className="num">0,91</td></tr>
           </tbody>
         </table></div>
         <div className="callout warn">
           <p><b>Hasilnya tidak menunjukkan keunggulan.</b> Dari 64 variasi pengaturan yang diuji (jendela konfirmasi, aturan keluar, stop loss, dan filter sideways), tidak ada satu pun yang menghasilkan rata-rata per posisi positif setelah biaya, baik di periode awal maupun di periode ujian. Profit factor di bawah 1 berarti total keuntungan lebih kecil daripada total kerugian.</p>
         </div>
         <ul>
-          <li>Hanya sekitar 31% posisi yang menguntungkan, dan median posisi rugi sekitar 3,3%. Keuntungan dari posisi yang berhasil tidak cukup menutup kerugian dari posisi lainnya.</li>
-          <li>Pada periode awal, saham yang sama bila hanya ditahan naik rata-rata sekitar 23,6%, sedangkan hasil gabungan strategi sekitar −8,4%. Pada periode akhir, ketika harga turun rata-rata sekitar 12,9%, strategi turun sekitar 6,3%. Hasil yang lebih kecil itu terutama karena strategi lebih sering berada di luar pasar, bukan karena sinyalnya tepat.</li>
-          <li>Filter &ldquo;hanya masuk bila MA20 sedang naik&rdquo; justru memperburuk hasil. Stop loss tidak membantu, dan jendela konfirmasi hanya memberi selisih kecil.</li>
+          <li>Hanya sekitar 31–32% posisi yang menguntungkan, dan median posisi rugi sekitar 3,2%. Keuntungan dari posisi yang berhasil tidak cukup menutup kerugian dari posisi lainnya.</li>
+          <li>Pada periode awal, saham yang sama bila hanya ditahan naik rata-rata sekitar 23,8%, sedangkan hasil gabungan strategi sekitar −8,5%. Pada periode akhir, ketika harga turun rata-rata sekitar 12,8%, strategi turun sekitar 6,4%. Hasil yang lebih kecil itu terutama karena strategi lebih sering berada di luar pasar, bukan karena sinyalnya tepat.</li>
+          <li>Filter &ldquo;hanya masuk bila MA20 sedang naik&rdquo; justru memperburuk hasil. Stop loss tidak memperbaiki rata-rata per posisi (ia hanya sedikit memangkas kerugian terburuk), dan jendela konfirmasi hanya memberi selisih kecil.</li>
         </ul>
         <p>Karena itu, persilangan MA{C.maFast}/MA{C.maSlow} yang dikonfirmasi MACD sebaiknya dibaca sebagai <b>penanda status tren</b>, bukan sebagai pemicu beli yang berdiri sendiri. Hasil ini berlaku untuk saham, periode, dan asumsi biaya di atas. Pengujian memakai anggota LQ45 yang berlaku sekarang (saham yang dulu keluar dari indeks tidak ikut diuji), dan hasil historis tidak menjamin hasil ke depan.</p>
       </section>
